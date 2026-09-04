@@ -13,15 +13,26 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 import numpy as np
+import shapely
 from rasterio.features import rasterize
 from rasterio.transform import from_origin
 from scipy.ndimage import gaussian_filter
 from shapely import affinity
-from shapely.geometry import Point, Polygon, LineString, box
+from shapely.geometry import Point, Polygon, MultiPolygon, LineString, box
 from shapely.ops import split, unary_union, polygonize
 
 CRS = "EPSG:32643"  # synthetic local UTM zone; a label only, no real datum work in Stage 0
 EPS = 1e-6  # area/length tolerance for "exact" tiling assertions
+GRID = 1e-9  # precision grid (metres) for shapely.set_precision after chained boolean ops.
+# Without an explicit grid, GEOS's overlay engine can give a *wrong* answer --
+# not just imprecise -- for a pair of thin/near-degenerate polygons several
+# split() generations deep: found via property testing, a real (seed=660)
+# recursively-split parcel pair whose true overlap is ~0 came back from
+# .intersection() as 209 m^2 (100% of the smaller parcel), verified wrong by
+# hand (ray-casting). A grid this fine is well below any GEOS/float64 rounding
+# already present in these coordinates, so it fixes the overlay robustness
+# bug (checked down to 1e-11 relative area error over 200 wards) without
+# adding measurable quantization of its own.
 
 
 @dataclass
@@ -76,6 +87,17 @@ class WardParams:
 
     gt_point_fraction: float = 0.08  # fraction of parcel corners sampled as exact GT points
 
+    def __post_init__(self):
+        lo, hi = self.strip_count_range
+        if lo > hi:
+            raise ValueError(f"strip_count_range must be (low, high) with low <= high, got {self.strip_count_range}")
+        if sum(self.style_weights.values()) <= 0:
+            raise ValueError(f"style_weights must sum to a positive number, got {self.style_weights}")
+        for name in ("legacy_jitter_std", "legacy_shift_range", "legacy_p_missing", "legacy_p_merge"):
+            missing = set(self.style_weights) - set(getattr(self, name))
+            if missing:
+                raise ValueError(f"{name} has no entry for style(s) {missing} present in style_weights")
+
 
 @dataclass
 class Block:
@@ -104,7 +126,7 @@ class Building:
 @dataclass
 class LegacyParcel:
     id: int
-    polygon: Polygon
+    polygon: Polygon | MultiPolygon  # a merge of two independently-shifted neighbors can miss touching
     source_parcel_ids: tuple
 
 
@@ -238,7 +260,10 @@ def _make_roads(ward_poly, params, rng):
 def _polygonize_blocks(ward_poly, road_lines):
     network = unary_union(list(road_lines) + [ward_poly.boundary])
     faces = list(polygonize(network))
-    return [f for f in faces if ward_poly.buffer(EPS).contains(f.representative_point())]
+    # area filter matters: a degenerate/collinear face makes minimum_rotated_rectangle
+    # return a LineString (no .exterior) and would crash _strip_split downstream
+    ward_buffered = ward_poly.buffer(EPS)
+    return [f for f in faces if f.area > EPS and ward_buffered.contains(f.representative_point())]
 
 
 def _pick_style(rng, params):
@@ -287,17 +312,26 @@ def _strip_split(poly, n, rng):
     strips = []
     for i in range(len(xs) - 1):
         slab = box(xs[i], miny - pad, xs[i + 1], maxy + pad)
-        piece = poly_r.intersection(slab)
+        piece = shapely.set_precision(poly_r.intersection(slab), GRID)
         if _to_polygonal(piece):
             strips.append(affinity.rotate(piece, angle, origin=center))
     return strips
 
 
-def _recursive_split(poly, rng, min_area, max_depth, depth=0):
+def _recursive_split(poly, rng, min_area, max_depth, depth=0, budget=None):
     """Random guillotine cut, recursed. Exact by construction: shapely's
     split() always partitions a polygon into pieces whose union is the
-    input, so this tiles exactly at every depth."""
-    if depth >= max_depth or poly.area <= min_area * 1.6:
+    input, so this tiles exactly at every depth.
+
+    `budget` caps total split operations for one top-level call, independent
+    of max_depth/min_area: those two are user knobs and a small min_area
+    paired with a large max_depth is an easy way to ask for up to 2**max_depth
+    pieces by accident. Past the cap, remaining pieces are returned unsplit
+    (still an exact, just coarser, tiling) instead of continuing to recurse.
+    """
+    if budget is None:
+        budget = [4096]
+    if depth >= max_depth or poly.area <= min_area * 1.6 or budget[0] <= 0:
         return [poly]
     minx, miny, maxx, maxy = poly.bounds
     diag = ((maxx - minx) ** 2 + (maxy - miny) ** 2) ** 0.5
@@ -307,14 +341,16 @@ def _recursive_split(poly, rng, min_area, max_depth, depth=0):
     dx, dy = np.cos(angle) * diag, np.sin(angle) * diag
     cut = LineString([(cx - dx, cy - dy), (cx + dx, cy + dy)])
     try:
-        pieces = [g for g in split(poly, cut).geoms if _to_polygonal(g)]
+        pieces = [shapely.set_precision(g, GRID) for g in split(poly, cut).geoms]
+        pieces = [g for g in pieces if _to_polygonal(g)]
     except Exception:
         pieces = []
     if len(pieces) < 2:
         return [poly]
+    budget[0] -= 1
     out = []
     for piece in pieces:
-        out.extend(_recursive_split(piece, rng, min_area, max_depth, depth + 1))
+        out.extend(_recursive_split(piece, rng, min_area, max_depth, depth + 1, budget))
     return out
 
 
@@ -333,15 +369,20 @@ def _subdivide_block(poly, style, params, rng):
 # boundary edges (which parcel lines are "visible" in the rendered image)
 # --------------------------------------------------------------------------
 
-def _boundary_edges(blocks, parcels, params, rng):
-    edges_geom, edges_visible = {}, {}
+def _group_by_block(parcels):
     by_block = {}
     for p in parcels:
         by_block.setdefault(p.block_id, []).append(p)
+    return by_block
+
+
+def _boundary_edges(blocks, parcels, params, rng):
+    edges_geom, edges_visible = {}, {}
+    by_block = _group_by_block(parcels)
 
     for blk in blocks:
         members = by_block.get(blk.id, [])
-        shared_union = None
+        shared_segments = []
         for i in range(len(members)):
             for j in range(i + 1, len(members)):
                 a, b = members[i], members[j]
@@ -350,7 +391,8 @@ def _boundary_edges(blocks, parcels, params, rng):
                     key = tuple(sorted((a.id, b.id)))
                     edges_geom[key] = shared
                     edges_visible[key] = bool(rng.random() < params.visible_edge_fraction)
-                    shared_union = shared if shared_union is None else shared_union.union(shared)
+                    shared_segments.append(shared)
+        shared_union = unary_union(shared_segments) if shared_segments else None
         for p in members:
             ext = p.polygon.boundary
             if shared_union is not None:
@@ -377,9 +419,7 @@ def _random_rect_in(envelope, coverage_range, rng):
 
 
 def _place_buildings(blocks, parcels, params, rng):
-    by_block = {}
-    for p in parcels:
-        by_block.setdefault(p.block_id, []).append(p)
+    by_block = _group_by_block(parcels)
 
     buildings, bid = [], 0
     for blk in blocks:
@@ -425,7 +465,12 @@ def _make_legacy_layer(parcels, adjacency_pairs, params, rng):
     distorted = {}
     for p in parcels:
         shift = rng.normal(0, params.legacy_shift_range[p.style], size=2)
-        coords = np.array(p.polygon.exterior.coords)
+        # drop the duplicate closing vertex before jittering: jittering it
+        # independently from the (identical) first vertex breaks ring closure
+        # and leaves a stray near-duplicate point that can self-intersect the
+        # ring almost every time. Shapely re-closes the ring on construction,
+        # using this same jittered first point for both ends.
+        coords = np.array(p.polygon.exterior.coords)[:-1]
         jitter = rng.normal(0, params.legacy_jitter_std[p.style], size=coords.shape)
         poly = Polygon(coords + jitter + shift)
         if not poly.is_valid:
@@ -434,18 +479,24 @@ def _make_legacy_layer(parcels, adjacency_pairs, params, rng):
 
     present = {pid for pid in distorted if rng.random() >= params.legacy_p_missing[style_of[pid]]}
 
-    merged, absorbed = [], set()
+    # `settled` tracks every pid that already has a merged.append() entry --
+    # both a merge's primary and its absorbed partner. Filtering candidates
+    # against only `absorbed` (partners) missed the case where a pid already
+    # emitted as its own standalone entry gets picked as a *later* pid's
+    # merge partner, duplicating that parcel's geometry into two entries.
+    merged, settled = [], set()
     for pid in sorted(present):
-        if pid in absorbed:
+        if pid in settled:
             continue
-        candidates = [n for n in neighbors.get(pid, []) if n in present and n not in absorbed]
+        candidates = [n for n in neighbors.get(pid, []) if n in present and n not in settled]
         if candidates and rng.random() < params.legacy_p_merge[style_of[pid]]:
-            other = candidates[rng.integers(len(candidates))]
+            other = int(rng.choice(candidates))
             geom = unary_union([distorted[pid], distorted[other]])
             merged.append(LegacyParcel(pid, geom, (pid, other)))
-            absorbed.add(other)
+            settled.add(other)
         else:
             merged.append(LegacyParcel(pid, distorted[pid], (pid,)))
+        settled.add(pid)
     return merged
 
 
@@ -454,15 +505,18 @@ def _make_legacy_layer(parcels, adjacency_pairs, params, rng):
 # --------------------------------------------------------------------------
 
 def _make_gt_points(parcels, params, rng):
-    pts, seen = [], set()
+    # dedupe corners *before* drawing: a corner shared by k parcels must get
+    # exactly one Bernoulli(gt_point_fraction) trial, not up to k independent
+    # ones (which biased selection toward high-parcel-density corners).
+    corners = {}
     for p in parcels:
         for (x, y) in list(p.polygon.exterior.coords)[:-1]:
-            key = (round(x, 6), round(y, 6))
-            if key in seen:
-                continue
-            if rng.random() < params.gt_point_fraction:
-                pts.append(GTPoint(x, y, p.id))
-                seen.add(key)
+            corners.setdefault((round(x, 6), round(y, 6)), (x, y, p.id))
+
+    pts = []
+    for x, y, pid in corners.values():
+        if rng.random() < params.gt_point_fraction:
+            pts.append(GTPoint(x, y, pid))
     return pts
 
 
