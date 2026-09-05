@@ -16,7 +16,7 @@ import numpy as np
 import shapely
 from rasterio.features import rasterize
 from rasterio.transform import from_origin
-from scipy.ndimage import gaussian_filter
+from scipy.ndimage import distance_transform_edt, gaussian_filter
 from shapely import affinity
 from shapely.geometry import Point, Polygon, MultiPolygon, LineString, box
 from shapely.ops import split, unary_union, polygonize
@@ -602,3 +602,44 @@ def _render_rasters(ward_poly, parcels, road_render_union, buildings, edges_geom
 
     ortho = np.clip(ortho, 0, 255).astype(np.uint8)
     return ortho, dsm.astype(np.float32), dtm.astype(np.float32), transform
+
+
+# --------------------------------------------------------------------------
+# simulated evidence field (Stage 3 test support -- Stage 4's real model
+# doesn't exist yet, so this is the stand-in "high value = boundary probably
+# runs here" raster the capacity-constrained solver is tested against)
+# --------------------------------------------------------------------------
+
+def simulate_evidence_field(
+    ward: SyntheticWard, block_id: int, gsd: float = 0.5, decay: float = 1.5,
+    base: float = 0.05, noise_std: float = 0.05, seed: int = 0,
+):
+    """A fake boundary-evidence raster for one block: high near VISIBLE true
+    edges bordering that block's parcels, decaying with distance; zero
+    contribution from invisible edges, because a real model can't see them
+    either -- that's the whole premise this stage is built to handle."""
+    block = next(b for b in ward.blocks if b.id == block_id)
+    block_parcel_ids = {p.id for p in ward.parcels if p.block_id == block_id}
+    minx, miny, maxx, maxy = block.polygon.bounds
+    out_w = max(int(np.ceil((maxx - minx) / gsd)), 1)
+    out_h = max(int(np.ceil((maxy - miny) / gsd)), 1)
+    transform = from_origin(minx, maxy, gsd, gsd)
+
+    visible_lines = [
+        ward.edges_geom[key]
+        for key, visible in ward.edges_visible.items()
+        if visible and (key[0] in block_parcel_ids or key[1] in block_parcel_ids)
+    ]
+
+    rng = np.random.default_rng(seed)
+    if visible_lines:
+        edge_mask = rasterize(
+            [(ln.buffer(gsd / 2), 1) for ln in visible_lines], (out_h, out_w), transform=transform, fill=0, dtype="uint8"
+        ).astype(bool)
+        dist_px = distance_transform_edt(~edge_mask)
+        ridge = np.exp(-(dist_px * gsd) / decay)
+    else:
+        ridge = np.zeros((out_h, out_w), dtype=np.float64)
+
+    field = base + (1 - base) * ridge + rng.normal(0, noise_std, size=(out_h, out_w))
+    return np.clip(field, 0.0, 1.0).astype(np.float32), transform

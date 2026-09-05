@@ -1,5 +1,4 @@
-# Stage 0 + Stage 1 + Stage 2. Add scikit-image (Stage 3 SLIC) when that
-# stage actually imports it -- don't pre-install unused deps.
+# Stage 0 + Stage 1 + Stage 2 + Stage 3.
 shapely==2.1.2
 numpy==2.5.2
 scipy==1.18.1
@@ -13,3 +12,7 @@ SQLAlchemy==2.0.52
 alembic==1.19.2
 GeoAlchemy2==0.20.0   # the standard SQLAlchemy<->PostGIS geometry-column bridge
 psycopg[binary]==3.3.5  # the actual Postgres DBAPI driver SQLAlchemy needs to connect at all
+
+# Stage 3: capacity-constrained parcel assignment.
+POT==0.9.7.post1       # optimal transport solver (exact network simplex + Sinkhorn)
+scikit-image==0.26.0   # SLIC superpixels, watershed fallback

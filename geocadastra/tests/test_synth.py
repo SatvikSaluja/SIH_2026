@@ -19,6 +19,7 @@ from geocadastra.synth.generator import (
     _make_gt_points,
     _recursive_split,
     generate_ward,
+    simulate_evidence_field,
 )
 
 SEEDS = [0, 1, 42, 7, 123, 660]  # 660: pins the phantom-overlap GEOS regression (see below)
@@ -298,3 +299,20 @@ def test_crossing_buildings_can_occur_in_informal_blocks():
             found = True
             break
     assert found, "expected at least one multi-parcel (crossing) building across seeds"
+
+
+def test_evidence_field_is_monotonically_stronger_with_more_visible_edges():
+    means = []
+    for frac in (0.0, 0.3, 0.7, 1.0):
+        ward = generate_ward(params=WardParams(visible_edge_fraction=frac), seed=1)
+        field, _ = simulate_evidence_field(ward, ward.blocks[0].id, seed=1)
+        assert field.shape[0] > 0 and field.shape[1] > 0
+        assert field.min() >= 0.0 and field.max() <= 1.0
+        means.append(field.mean())
+    assert means == sorted(means)
+
+
+def test_evidence_field_zero_visible_edges_is_pure_noise_no_ridges():
+    ward = generate_ward(params=WardParams(visible_edge_fraction=0.0), seed=2)
+    field, _ = simulate_evidence_field(ward, ward.blocks[0].id, base=0.05, noise_std=0.05, seed=2)
+    assert field.max() < 0.05 + 6 * 0.05  # no ridge structure, just baseline + noise
