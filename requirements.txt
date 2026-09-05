@@ -1,5 +1,5 @@
-# Stage 0 + Stage 1. Add scikit-image (Stage 3 SLIC) when that stage
-# actually imports it -- don't pre-install unused deps.
+# Stage 0 + Stage 1 + Stage 2. Add scikit-image (Stage 3 SLIC) when that
+# stage actually imports it -- don't pre-install unused deps.
 shapely==2.1.2
 numpy==2.5.2
 scipy==1.18.1
@@ -7,3 +7,9 @@ rasterio==1.5.1
 pyproj==3.7.2
 pytest==9.1.1
 hypothesis==6.167.1
+
+# Stage 2: store, versioning, provenance.
+SQLAlchemy==2.0.52
+alembic==1.19.2
+GeoAlchemy2==0.20.0   # the standard SQLAlchemy<->PostGIS geometry-column bridge
+psycopg[binary]==3.3.5  # the actual Postgres DBAPI driver SQLAlchemy needs to connect at all
