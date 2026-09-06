@@ -16,3 +16,11 @@ psycopg[binary]==3.3.5  # the actual Postgres DBAPI driver SQLAlchemy needs to c
 # Stage 3: capacity-constrained parcel assignment.
 POT==0.9.7.post1       # optimal transport solver (exact network simplex + Sinkhorn)
 scikit-image==0.26.0   # SLIC superpixels, watershed fallback
+
+# Stage 4: model service. CPU build pinned here -- swap for a CUDA build
+# (--index-url https://download.pytorch.org/whl/cuXXX) on GPU hardware; keep
+# torch/torchvision versions matched, mismatched pairs break at import
+# (torchvision::nms operator missing).
+torch==2.14.0
+torchvision==0.29.0
+timm==1.0.29            # pretrained=False backbones (features_only=True) for the shared trunk
