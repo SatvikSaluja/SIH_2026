@@ -2,7 +2,7 @@ import pytest
 from shapely.geometry import LineString, box
 
 from geocadastra.core.blocks import build_blocks
-from geocadastra.core.crs import Geom
+from geocadastra.core.crs import CRSMismatchError, Geom
 from geocadastra.core.graph import OUTER
 from geocadastra.synth.generator import WardParams, generate_ward
 
@@ -74,3 +74,16 @@ def test_every_block_edge_has_exactly_two_face_sides():
     g = build_blocks(road_linework, Geom(ward.ward_polygon, CRS), CRS)
     for e in g.edges.values():
         assert len(g.faces_of_edge(e.id)) == 2
+
+
+def test_build_blocks_rejects_a_ward_boundary_in_the_wrong_crs():
+    """Regression: build_blocks() used to silently re-wrap
+    ward_boundary.geom under `crs` without ever checking ward_boundary's
+    own declared CRS matched -- exactly the "silently coerce" pattern
+    Geom/CRSMismatchError exist to prevent everywhere else in this
+    project."""
+    ward = generate_ward(params=WardParams(n_arterial_h=1, n_arterial_v=1), seed=3)
+    road_linework = [Geom(ln, CRS) for ln in ward.roads_centerline]
+    wrong_crs_boundary = Geom(ward.ward_polygon, "EPSG:4326")  # lon/lat degrees, not UTM metres
+    with pytest.raises(CRSMismatchError):
+        build_blocks(road_linework, wrong_crs_boundary, CRS)

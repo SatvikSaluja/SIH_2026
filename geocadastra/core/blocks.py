@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import shapely
 
-from geocadastra.core.crs import Geom
+from geocadastra.core.crs import CRSMismatchError, Geom
 from geocadastra.core.graph import PlanarGraph, build_graph
 from geocadastra.core.planarize import GRID, planarize
 
@@ -22,6 +22,12 @@ def build_blocks(road_linework: list[Geom], ward_boundary: Geom, crs: str, grid:
     -> a PlanarGraph whose faces are blocks. Road segments outside the ward
     boundary are ignored -- they polygonize into faces that don't overlap
     the ward and are filtered out, along with any degenerate sliver face."""
+    if ward_boundary.crs != crs:
+        # found by review: this used to silently re-wrap ward_boundary.geom
+        # under `crs` without ever checking ward_boundary's own declared CRS
+        # matched -- exactly the "silently coerce" pattern Geom/
+        # CRSMismatchError exist to prevent everywhere else in this project.
+        raise CRSMismatchError(f"ward_boundary is in {ward_boundary.crs!r}, expected {crs!r}")
     boundary_line = Geom(ward_boundary.geom.boundary, crs)
     faces = planarize(road_linework, grid=grid, fixed=[boundary_line])
 

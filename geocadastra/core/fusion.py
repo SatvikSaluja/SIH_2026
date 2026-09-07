@@ -50,20 +50,29 @@ STAGE_5_NOTES.md.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from types import MappingProxyType
 
 import numpy as np
 from shapely.geometry import LinearRing, Point
 from shapely.ops import nearest_points
 
 from geocadastra.core.conflicts import ConflictRecord, max_pairwise_disagreement
-from geocadastra.core.crs import Geom
+from geocadastra.core.crs import CRSMismatchError, Geom
 from geocadastra.core.graph import OUTER, PlanarGraph
 from geocadastra.core.transport import _world_to_pixel
 
 # doc: "Legacy GIS reliability is conditioned on the block's land-use
 # classification" -- roughly tracking synth.generator's own legacy
 # jitter+shift magnitude per style (informal moves ~4m total, formal ~1m).
-DEFAULT_SIGMA_LEGACY_BY_STYLE = {"formal": 0.5, "informal": 3.0, "institutional": 1.0}  # metres
+#
+# MappingProxyType (read-only), not a plain dict: this is bound directly as
+# a default argument on three functions below (the classic mutable-default
+# pitfall -- found by review). A caller who obtains a reference to it (e.g.
+# `sigmas = sigma_legacy_by_style or DEFAULT_SIGMA_LEGACY_BY_STYLE` then
+# mutates `sigmas`) would otherwise silently corrupt every later call's
+# default for the rest of the process. The proxy makes that raise
+# immediately instead.
+DEFAULT_SIGMA_LEGACY_BY_STYLE = MappingProxyType({"formal": 0.5, "informal": 3.0, "institutional": 1.0})  # metres
 DEFAULT_SIGMA_GT = 0.05  # metres -- GT survey points are treated as near-exact
 DEFAULT_CAPTURE_RADIUS = 3.0  # metres -- beyond this, a GT point "carries no information"
 DEFAULT_TOLERANCE = 6.0  # metres -- disagreement beyond this is a conflict, not an average
@@ -108,7 +117,11 @@ def gt_estimate(node_xy: tuple, gt_points, capture_radius: float = DEFAULT_CAPTU
     """Nearest of `gt_points` (an iterable of (x, y)) to `node_xy`, but only
     if within `capture_radius` -- otherwise None, not a low-confidence
     estimate: a GT point genuinely has nothing to say that far away."""
-    if not gt_points:
+    # len(), not `not gt_points` -- plain truthiness on a numpy array of
+    # 2+ points raises ValueError ("truth value... is ambiguous"), crashing
+    # this documented-as-"an iterable of (x, y)" parameter for a caller who
+    # passes an array instead of a list (found by review, reproduced).
+    if gt_points is None or len(gt_points) == 0:
         return None
     pts = np.asarray(gt_points, dtype=float)
     d = np.hypot(pts[:, 0] - node_xy[0], pts[:, 1] - node_xy[1])
@@ -133,7 +146,18 @@ def model_estimate(
     that near this node, which must not silently become "the boundary is
     right here"."""
     h, w = sdf.shape
-    center_row, center_col = _world_to_pixel(node_xy, transform)
+    # `shape=(h, w)` clamps center_row/center_col into [0, h-1]/[0, w-1] --
+    # without it, a node far enough outside the raster gives a small
+    # NEGATIVE row1/col1 below (center + radius + 1, ceiling-clamped to h/w
+    # but never floor-clamped), and Python's negative-index slicing then
+    # silently wraps sdf[row0:row1] to the array's own tail instead of
+    # yielding an empty window -- found by review, reproduced directly: a
+    # node 10px above a raster's top edge returned a confidently wrong
+    # SourceEstimate from an unrelated row instead of the documented None.
+    # transport.py's own _world_to_pixel docstring already documents this
+    # exact bug class being found and fixed elsewhere by clamping both
+    # ends; this call site just never adopted that fix.
+    center_row, center_col = _world_to_pixel(node_xy, transform, shape=(h, w))
     row0 = max(center_row - search_radius_px, 0)
     row1 = min(center_row + search_radius_px + 1, h)
     col0 = max(center_col - search_radius_px, 0)
@@ -199,7 +223,7 @@ def fuse_node(
         est = model_estimate(node_xy, sdf, log_var, transform)
         if est is not None:
             estimates.append(est)
-    if gt_points:
+    if gt_points is not None and len(gt_points) > 0:
         est = gt_estimate(node_xy, gt_points, capture_radius, sigma_gt)
         if est is not None:
             estimates.append(est)
@@ -271,11 +295,26 @@ def _is_exterior_node(graph: PlanarGraph, node_id: int) -> bool:
     )
 
 
-def _boundary_ring(block_boundary) -> LinearRing:
+def _boundary_ring(block_boundary, crs: str) -> LinearRing:
     """Accept a `Geom`, a shapely Polygon, or an already-built
     LinearRing/LineString for the block's own true exterior, and return a
-    LinearRing -- one normalized shape callers don't each have to handle."""
-    geom = block_boundary.geom if isinstance(block_boundary, Geom) else block_boundary
+    LinearRing -- one normalized shape callers don't each have to handle.
+
+    If `block_boundary` is a `Geom`, its own declared `.crs` MUST match
+    `crs` (the graph's own CRS) -- found by review: this used to silently
+    unwrap a `Geom` without ever comparing its CRS, exactly the "silently
+    coerce" pattern `Geom`/`CRSMismatchError` exist to rule out elsewhere
+    in this project. Reproduced directly: a `block_boundary` Geom tagged
+    EPSG:4326 (lon/lat degrees) against a graph in EPSG:32643 (UTM
+    metres) was silently accepted with no error, producing a ring with
+    numerically-plausible-looking but wrong-coordinate-system numbers.
+    """
+    if isinstance(block_boundary, Geom):
+        if block_boundary.crs != crs:
+            raise CRSMismatchError(f"block_boundary is in {block_boundary.crs!r}, expected {crs!r}")
+        geom = block_boundary.geom
+    else:
+        geom = block_boundary
     if geom.geom_type == "Polygon":
         return LinearRing(geom.exterior.coords)
     if geom.geom_type == "LinearRing":
@@ -313,7 +352,8 @@ def _project_onto_block_boundary(
     """
     length = ring.length
     dist = ring.project(Point(x, y))
-    if dist_lo is not None and dist_hi is not None:
+    clamped = dist_lo is not None and dist_hi is not None
+    if clamped:
         # `dist` is shapely's own [0, length) parametrization, but the
         # valid [dist_lo, dist_hi] range may already have been shifted
         # outside that (see _ring_neighbor_bounds) to correctly represent
@@ -328,7 +368,27 @@ def _project_onto_block_boundary(
         dist %= length
     proj = ring.interpolate(dist)
     vertices = list(ring.coords)
-    nearest_vertex = min(vertices, key=lambda c: (c[0] - proj.x) ** 2 + (c[1] - proj.y) ** 2)
+    if clamped:
+        # Only snap to a vertex that's actually reachable WITHIN the
+        # clamped arc -- found by review: without this, a vertex on a
+        # topologically-distant part of the ring that happens to sit
+        # close in plain 2D space (plausible on a concave/complex
+        # boundary, e.g. a narrow near-self-touching feature) could still
+        # be picked, silently jumping this node past its neighbor even
+        # though `dist` itself was correctly clamped above -- reopening
+        # the exact "node jumps past its neighbor, folding the ring's
+        # walk order" failure mode the clamp exists to prevent.
+        candidates = []
+        for vx, vy in vertices:
+            vdist = ring.project(Point(vx, vy))
+            vdist += length * round((center - vdist) / length)
+            if dist_lo <= vdist <= dist_hi:
+                candidates.append((vx, vy))
+    else:
+        candidates = vertices
+    if not candidates:
+        return proj.x, proj.y
+    nearest_vertex = min(candidates, key=lambda c: (c[0] - proj.x) ** 2 + (c[1] - proj.y) ** 2)
     vertex_dist = ((nearest_vertex[0] - proj.x) ** 2 + (nearest_vertex[1] - proj.y) ** 2) ** 0.5
     if vertex_dist <= vertex_snap_tol:
         return nearest_vertex[0], nearest_vertex[1]
@@ -443,7 +503,7 @@ def fuse_block(
     but geometrically nonsensical. This check is what makes that fail
     safe (left alone) instead of failing wrong.
     """
-    ring = _boundary_ring(block_boundary) if block_boundary is not None else None
+    ring = _boundary_ring(block_boundary, graph.crs) if block_boundary is not None else None
     moved: dict = {}
     conflicts: list = []
     unchanged: list = []

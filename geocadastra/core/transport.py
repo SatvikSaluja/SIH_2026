@@ -31,7 +31,7 @@ from shapely.geometry import Polygon, shape as shapely_shape
 from shapely.ops import unary_union
 from skimage.segmentation import slic
 
-from geocadastra.core.crs import Geom
+from geocadastra.core.crs import CRSMismatchError, Geom
 from geocadastra.core.graph import PlanarGraph, build_graph
 from geocadastra.core.planarize import GRID, planarize
 
@@ -482,6 +482,13 @@ def parcels_to_graph(parcel_polygons: dict, block: Geom, grid: float = GRID) -> 
     block_polygon, crs = block.geom, block.crs
     linework = []
     for pid, geom in parcel_polygons.items():
+        if geom.crs != crs:
+            # found by review: this used to silently unwrap geom.geom
+            # without ever checking geom's own declared CRS matched the
+            # block's -- exactly the "silently coerce" pattern Geom/
+            # CRSMismatchError exist to prevent everywhere else in this
+            # project.
+            raise CRSMismatchError(f"parcel {pid} is in {geom.crs!r}, expected {crs!r}")
         g = geom.geom
         parts = g.geoms if g.geom_type == "MultiPolygon" else [g]
         for part in parts:

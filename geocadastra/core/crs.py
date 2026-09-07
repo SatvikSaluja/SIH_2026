@@ -19,6 +19,19 @@ class CRSMismatchError(ValueError):
     pass
 
 
+# Matches core/planarize.py's own GRID (not imported from there -- planarize.py
+# already imports FROM this module, so importing back would be circular).
+# Without an explicit precision grid, a raw GEOS overlay op can return a
+# genuinely WRONG (not just imprecise) answer, or crash with GEOSException,
+# for thin/near-degenerate inputs at this project's real UTM coordinate
+# scale -- see synth/generator.py's GRID comment for the original,
+# real (seed=660) reproduction of a 209 m^2 wrong intersection area. Found
+# by review: this project's own canonical "every geometry crossing a module
+# boundary should be a Geom" wrapper had skipped the fix it applies
+# everywhere else.
+_GRID = 1e-3
+
+
 @dataclass(frozen=True)
 class Geom:
     geom: BaseGeometry
@@ -30,15 +43,15 @@ class Geom:
 
     def intersection(self, other: "Geom") -> "Geom":
         self._require_same_crs(other)
-        return Geom(self.geom.intersection(other.geom), self.crs)
+        return Geom(self.geom.intersection(other.geom, grid_size=_GRID), self.crs)
 
     def union(self, other: "Geom") -> "Geom":
         self._require_same_crs(other)
-        return Geom(self.geom.union(other.geom), self.crs)
+        return Geom(self.geom.union(other.geom, grid_size=_GRID), self.crs)
 
     def difference(self, other: "Geom") -> "Geom":
         self._require_same_crs(other)
-        return Geom(self.geom.difference(other.geom), self.crs)
+        return Geom(self.geom.difference(other.geom, grid_size=_GRID), self.crs)
 
     def distance(self, other: "Geom") -> float:
         self._require_same_crs(other)

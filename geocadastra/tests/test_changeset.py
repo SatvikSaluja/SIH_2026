@@ -404,6 +404,53 @@ class TestConcurrency:
         assert (final.nodes[node_a].x, final.nodes[node_a].y) == (a.x + dx, a.y + dy)
         assert (final.nodes[node_b].x, final.nodes[node_b].y) == (b.x, b.y)  # s2's edit did not apply
 
+    def test_apply_fusion_records_a_concurrent_modification_as_topology_refused_not_a_crash(
+        self, concurrent_sessions, monkeypatch
+    ):
+        """Regression: apply_fusion()'s per-move try/except caught only
+        ValueError, but ConcurrentModificationError is a RuntimeError -- an
+        ordinary concurrent edit landing mid-batch crashed the WHOLE
+        apply_fusion() call uncaught instead of being recorded like any
+        other refused move, losing every already-applied result too
+        (found by review, reproduced by injecting a real second session's
+        commit into the exact load-to-commit window of one move)."""
+        s1, s2 = concurrent_sessions
+        p1, p2 = box(0, 0, 2, 2), box(2, 0, 4, 2)
+        local_graph = build_graph([Geom(p1, CRS), Geom(p2, CRS)], CRS)
+        seed_block_graph(s1, block_id=700, graph=local_graph, description="seed")
+        s1.commit()
+
+        graph = load_block_graph(s1, 700)
+        node_a = next(nid for nid, n in graph.nodes.items() if (n.x, n.y) == (2.0, 0.0))
+
+        # Inject a real concurrent commit to node_a from s2 exactly inside
+        # apply_fusion's own load-to-commit window for that node, by having
+        # it fire the first time ChangesetContext.move_node() is called --
+        # after __enter__ (load) but before __exit__ (check + commit).
+        original_move_node = ChangesetContext.move_node
+        injected = {"done": False}
+
+        def move_node_with_concurrent_write(self, *args, **kwargs):
+            if not injected["done"]:
+                injected["done"] = True
+                with ChangesetContext(s2, block_id=700) as cs2:
+                    cs2.move_node(node_a, 2.0, 0.05)
+            return original_move_node(self, *args, **kwargs)
+
+        monkeypatch.setattr(ChangesetContext, "move_node", move_node_with_concurrent_write)
+
+        fake_result = FuseBlockResult(
+            moved={node_a: FusedPosition(x=2.0, y=0.02, sigma=1.0, sources=("test",))},
+            conflicts=[],
+            unchanged=[],
+        )
+        result = apply_fusion(s1, 700, fake_result)  # must not raise
+
+        assert result.applied == []
+        assert len(result.topology_refused) == 1
+        assert result.topology_refused[0]["node_id"] == node_a
+        assert "changed since" in result.topology_refused[0]["reason"]
+
     def test_concurrent_provenance_appends_are_serialized_not_forked(self, concurrent_sessions):
         """Regression: two concurrent append_provenance calls both read the
         same chain tip and both committed successfully, forking the chain --

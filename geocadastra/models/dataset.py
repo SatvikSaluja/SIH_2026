@@ -70,7 +70,15 @@ def ward_to_tensors(ward: SyntheticWard) -> dict[str, torch.Tensor]:
         else np.zeros((h, w), dtype=bool)
     )
 
-    road_polys = [ln.buffer(3.0) for ln in ward.roads_centerline]
+    # a flat 3.0m buffer used to be hardcoded here regardless of true road
+    # width -- correct only for minor roads (width 6.0m); an arterial road
+    # (default width 12.0m) got a road_true/landuse-class-3 footprint
+    # roughly half its true rendered width, silently undercounting both
+    # targets for any ward with arterial roads (found by review, reproduced:
+    # 1368px vs the correctly-widthed 2184px on the same ward). Every
+    # current training/test config disables arterial roads, so this was
+    # never exercised -- fixed for any future default-config caller.
+    road_polys = [ln.buffer(w / 2) for ln, w in zip(ward.roads_centerline, ward.road_widths)]
     road_true = (
         rasterize([(p, 1) for p in road_polys], (h, w), transform=ward.transform, fill=0, dtype="uint8").astype(np.float32)
         if road_polys

@@ -431,7 +431,20 @@ def apply_fusion(session: Session, block_id: int, fuse_result, author: str | Non
             with ChangesetContext(session, block_id=block_id, author=author, description="fusion") as cs:
                 cs.move_node(node_id, fused.x, fused.y, evidence_type="fusion", detail={"sources": list(fused.sources)})
             applied.append(node_id)
-        except ValueError as e:
+        except (ValueError, ConcurrentModificationError) as e:
+            # ConcurrentModificationError is a RuntimeError, not a ValueError --
+            # `except ValueError` alone let it propagate out of this whole
+            # function, aborting every already-applied result and every
+            # not-yet-attempted move for one ordinary concurrent edit landing
+            # mid-batch (found by review: reproduced directly with a second
+            # session committing a change to the same node between this
+            # changeset's load and commit). It's the same kind of event as a
+            # topology refusal -- this specific move is no longer safe to
+            # trust -- so it's recorded the same way, not left to crash the
+            # batch. A generic RuntimeError (e.g. load_block_graph's "store is
+            # inconsistent" guard) is NOT caught here and still propagates --
+            # that signals real data corruption, not a recoverable race, and
+            # must not be silently folded into "this one move was refused".
             topology_refused.append({"node_id": node_id, "sources": fused.sources, "reason": str(e)})
     return FusionApplyResult(applied=applied, conflicts=list(fuse_result.conflicts), topology_refused=topology_refused)
 

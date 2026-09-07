@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 import torch
 
 from geocadastra.models.dataset import ward_to_tensors
@@ -22,6 +23,27 @@ def test_ward_to_tensors_shapes_and_ranges_are_sane():
     assert t["visible_mask"].shape == (h, w)
     assert t["landuse_true"].shape == (h, w)
     assert t["landuse_true"].max() <= 3 and t["landuse_true"].min() >= 0
+
+
+def test_road_true_width_matches_arterial_width_not_a_hardcoded_value():
+    """Regression: road_polys used to buffer every road centerline by a
+    flat 3.0m regardless of its true width -- correct only for minor
+    roads (6.0m); an arterial road (default 12.0m) got a road_true
+    footprint roughly half its true width, silently undercounting the
+    road/landuse-class-3 training targets (found by review)."""
+    params = WardParams(
+        width=48, height=48, gsd=1.0, n_arterial_h=1, n_arterial_v=0, minor_spacing=200, arterial_width=12.0
+    )
+    ward = generate_ward(params=params, seed=1)
+    t = ward_to_tensors(ward)
+    road_mask = t["road_true"][0].numpy() > 0.5
+
+    # the single horizontal arterial spans the full ward width -- measure
+    # its pixel width at a column comfortably inside the ward (away from
+    # the buffer's rounded end caps near the left/right edges)
+    col = road_mask[:, 24]
+    measured_width_px = col.sum()
+    assert measured_width_px == pytest.approx(params.arterial_width / params.gsd, abs=1)
 
 
 def test_training_loss_decreases_over_a_short_run():

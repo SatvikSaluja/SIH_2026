@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 import shapely
+from shapely.errors import GEOSException
 from rasterio.features import rasterize
 from rasterio.transform import from_origin
 from scipy.ndimage import distance_transform_edt, gaussian_filter
@@ -148,6 +149,7 @@ class SyntheticWard:
     edges_geom: dict  # edge_key -> LineString; key is (pid_a, pid_b) sorted, or (pid, -1) for exterior
     edges_visible: dict  # edge_key -> bool
     roads_centerline: list
+    road_widths: list  # metres, parallel to roads_centerline -- arterial_width or minor_width per line
     buildings: list
     legacy_parcels: list
     gt_points: list
@@ -162,7 +164,7 @@ def generate_ward(params: WardParams | None = None, seed: int = 0) -> SyntheticW
     rng = np.random.default_rng(seed)
 
     ward_poly = box(0, 0, params.width, params.height)
-    road_lines, road_render_polys = _make_roads(ward_poly, params, rng)
+    road_lines, road_render_polys, road_widths = _make_roads(ward_poly, params, rng)
     block_polys = _polygonize_blocks(ward_poly, road_lines)
     blocks = [Block(i, poly, str(_pick_style(rng, params))) for i, poly in enumerate(block_polys)]
 
@@ -195,6 +197,7 @@ def generate_ward(params: WardParams | None = None, seed: int = 0) -> SyntheticW
         edges_geom=edges_geom,
         edges_visible=edges_visible,
         roads_centerline=road_lines,
+        road_widths=road_widths,
         buildings=buildings,
         legacy_parcels=legacy_parcels,
         gt_points=gt_points,
@@ -248,13 +251,15 @@ def _make_roads(ward_poly, params, rng):
     lines = [LineString([(0, y), (width, y)]) for y in h_pos]
     lines += [LineString([(x, 0), (x, height)]) for x in v_pos]
     render_polys = [ln.buffer(params.arterial_width / 2, cap_style="flat") for ln in lines]
+    widths = [params.arterial_width] * len(lines)
 
     minor_lines = _minor_grid(width, height, params, rng, h_pos, v_pos)
     render_polys += [ln.buffer(params.minor_width / 2, cap_style="flat") for ln in minor_lines]
+    widths += [params.minor_width] * len(minor_lines)
     lines += minor_lines
 
     render_polys = [p.intersection(ward_poly) for p in render_polys]
-    return lines, render_polys
+    return lines, render_polys, widths
 
 
 def _polygonize_blocks(ward_poly, road_lines):
@@ -343,7 +348,16 @@ def _recursive_split(poly, rng, min_area, max_depth, depth=0, budget=None):
     try:
         pieces = [shapely.set_precision(g, GRID) for g in split(poly, cut).geoms]
         pieces = [g for g in pieces if _to_polygonal(g)]
-    except Exception:
+    except GEOSException:
+        # a genuine GEOS-level split failure (numerical robustness on a
+        # pathological cut/polygon pair) -- fall back to "this cut didn't
+        # split, keep the piece whole", still an exact (just coarser)
+        # tiling. Narrowed from a bare `except Exception` (found by
+        # review): that swallowed ANY exception, including a real bug in
+        # this function's own inputs (e.g. poly becoming None), silently
+        # indistinguishable from this legitimate case. An ordinary "cut
+        # doesn't touch the polygon" is not an exception at all -- split()
+        # just returns the polygon unsplit, caught below by len(pieces) < 2.
         pieces = []
     if len(pieces) < 2:
         return [poly]
@@ -386,7 +400,12 @@ def _boundary_edges(blocks, parcels, params, rng):
         for i in range(len(members)):
             for j in range(i + 1, len(members)):
                 a, b = members[i], members[j]
-                shared = a.polygon.boundary.intersection(b.polygon.boundary)
+                # grid_size: this module's own established fix for GEOS overlay
+                # ops returning a wrong (not just imprecise) answer on real
+                # data (found by review -- this real ground-truth edge/
+                # visibility computation had never applied it, unlike every
+                # other overlay call in this file; see the GRID comment above).
+                shared = a.polygon.boundary.intersection(b.polygon.boundary, grid_size=GRID)
                 if shared.length > EPS:
                     key = tuple(sorted((a.id, b.id)))
                     edges_geom[key] = shared
@@ -396,6 +415,14 @@ def _boundary_edges(blocks, parcels, params, rng):
         for p in members:
             ext = p.polygon.boundary
             if shared_union is not None:
+                # deliberately NOT grid_size=GRID here, unlike the
+                # intersection() above: shapely's grid_size overlay mode
+                # rejects mixed-dimension input with a hard GEOSException
+                # ("Overlay input is mixed-dimension"), and shared_union (a
+                # unary_union of several boundary-intersection LineStrings)
+                # can legitimately become one -- confirmed by reproduction,
+                # this crashed real synthetic wards that worked fine before.
+                # The plain (non-grid) overlay tolerates it.
                 ext = ext.difference(shared_union)
             if ext.length > EPS:
                 key = (p.id, -1)

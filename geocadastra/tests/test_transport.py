@@ -10,7 +10,7 @@ import pytest
 from rasterio.transform import from_origin
 from shapely.geometry import Polygon, box
 
-from geocadastra.core.crs import Geom
+from geocadastra.core.crs import CRSMismatchError, Geom
 from geocadastra.core.transport import (
     Conflict,
     assign_parcels,
@@ -288,6 +288,17 @@ def test_parcels_to_graph_wraps_the_hole_error_with_actionable_context():
     parcel_polygons = {0: _geom(donut_parcel), 1: _geom(island_parcel)}
     with pytest.raises(NotImplementedError, match="island"):
         parcels_to_graph(parcel_polygons, _geom(outer))
+
+
+def test_parcels_to_graph_rejects_a_parcel_in_the_wrong_crs():
+    """Regression: parcels_to_graph() used to silently unwrap each
+    parcel's Geom without ever checking its declared CRS matched the
+    block's -- exactly the "silently coerce" pattern Geom/
+    CRSMismatchError exist to prevent everywhere else in this project."""
+    block = box(0, 0, 20, 10)
+    parcel_polygons = {0: Geom(box(0, 0, 10, 10), "EPSG:4326")}  # lon/lat degrees, not UTM metres
+    with pytest.raises(CRSMismatchError):
+        parcels_to_graph(parcel_polygons, _geom(block))
 
 
 # --------------------------------------------------------------------------

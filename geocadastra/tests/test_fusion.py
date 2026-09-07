@@ -9,10 +9,12 @@ import pytest
 from affine import Affine
 from shapely.geometry import LinearRing, LineString, Point, box
 
-from geocadastra.core.crs import Geom
+from geocadastra.core.crs import CRSMismatchError, Geom
 from geocadastra.core.fusion import (
+    DEFAULT_SIGMA_LEGACY_BY_STYLE,
     ConflictRecord,
     SourceEstimate,
+    _boundary_ring,
     _is_exterior_node,
     _project_onto_block_boundary,
     _ring_neighbor_bounds,
@@ -55,6 +57,16 @@ def test_fuse_estimates_requires_at_least_one():
         fuse_estimates([])
 
 
+def test_default_sigma_legacy_by_style_is_immutable():
+    """Regression: this dict is bound directly as a default argument on
+    three functions (legacy_estimate, fuse_node, fuse_block) -- the
+    classic mutable-default pitfall. A caller mutating a reference to it
+    would silently corrupt every later call's default; it must raise
+    instead."""
+    with pytest.raises(TypeError):
+        DEFAULT_SIGMA_LEGACY_BY_STYLE["formal"] = 2.0
+
+
 def test_legacy_estimate_uses_nearest_point_on_boundary_not_nearest_vertex():
     # a long edge from (0,0) to (100,0): nearest VERTEX to (50, 1) is far
     # (either endpoint), but nearest POINT on the line is directly below --
@@ -91,6 +103,20 @@ def test_gt_estimate_sigma_is_very_small():
     assert est.sigma < 0.2  # doc: "near-certain"
 
 
+def test_gt_estimate_and_fuse_node_accept_a_numpy_array_of_points():
+    """Regression: `if not gt_points:`/`if gt_points:` used plain
+    truthiness on a parameter documented only as "an iterable of (x, y)"
+    -- bool() on a numpy array of 2+ points raises ValueError instead of
+    evaluating the points (found by review, reproduced directly)."""
+    gt_points = np.array([[10.0, 10.0], [50.0, 50.0]])
+    est = gt_estimate((11.0, 10.0), gt_points, capture_radius=3.0)
+    assert est is not None
+    assert est.x == pytest.approx(10.0)
+
+    result = fuse_node((11.0, 10.0), face_ids=(1, 2), gt_points=gt_points, capture_radius=3.0)
+    assert result is not None
+
+
 def _flat_sdf_raster(shape=(40, 40), boundary_row=20):
     """A synthetic SDF raster with a known, exact minimum: a horizontal
     boundary at pixel row `boundary_row`, distance in pixels (gsd=1) to it."""
@@ -114,6 +140,20 @@ def test_model_estimate_none_when_nothing_nearby_within_max_sdf():
     # far from the boundary (row 20) and a tight search window -- no
     # in-window pixel is close enough to a predicted boundary
     est = model_estimate((5.5, -0.5), sdf, log_var, transform, search_radius_px=2, max_sdf_px=1.0)
+    assert est is None
+
+
+def test_model_estimate_none_for_a_node_just_outside_the_raster():
+    """Regression: model_estimate() called _world_to_pixel() without
+    shape=, so a node just outside the raster (not clamped) could give a
+    small NEGATIVE row1/col1 (ceiling-clamped to h/w but never floor-
+    clamped) -- Python's negative-index slicing then silently wrapped the
+    search window to the array's own tail instead of an empty window,
+    returning a confidently wrong SourceEstimate instead of None. Node at
+    row=-10 on a 40-row raster (10px above the top edge) reproduced this
+    exactly before the fix."""
+    sdf, log_var, transform = _flat_sdf_raster()  # boundary at row 20, shape (40, 40)
+    est = model_estimate((5.5, 10.0), sdf, log_var, transform, search_radius_px=8, max_sdf_px=1.0)
     assert est is None
 
 
@@ -219,6 +259,26 @@ def test_project_onto_block_boundary_clamps_between_given_bounds():
     assert (x, y) == pytest.approx((8.0, 0.0))
 
 
+def test_project_onto_block_boundary_vertex_snap_respects_the_clamp():
+    """Regression: the vertex-snap step used to search ALL of the ring's
+    vertices, unconstrained by the dist_lo/dist_hi clamp computed just
+    above it -- so a clamped-and-otherwise-safe candidate could still get
+    snapped to a vertex OUTSIDE its own valid arc, if that vertex happened
+    to sit close in plain 2D space (found by review). A "staple" ring
+    with a thin near-self-touching slit: (1,5.1) and (1,4.9) are only
+    0.2m apart in 2D but on opposite sides of the slit, far apart along
+    the ring's own walk. A node whose valid arc ends 0.1m short of
+    (1,5.1) must stay AT that clamped boundary, not jump to either
+    nearby-but-out-of-range vertex."""
+    ring = LinearRing([(0, 0), (0, 10), (10, 10), (10, 5.1), (1, 5.1), (1, 4.9), (10, 4.9), (10, 0), (0, 0)])
+    dist_v = ring.project(Point(1.0, 5.1))
+    lo = ring.project(Point(10.0, 5.1))
+    hi = dist_v - 0.1  # a non-vertex point 0.1m short of (1, 5.1), still in-range
+
+    x, y = _project_onto_block_boundary(ring, 0.9, 5.02, dist_lo=lo, dist_hi=hi, vertex_snap_tol=1.0)
+    assert (x, y) == pytest.approx((1.1, 5.1))  # the clamped boundary -- not snapped past it
+
+
 def test_ring_neighbor_bounds_finds_the_arc_containing_the_nodes_own_position():
     crs = "EPSG:32643"
     graph = build_graph([Geom(box(0, 0, 4, 4), crs), Geom(box(4, 0, 8, 4), crs)], crs)
@@ -258,6 +318,30 @@ def test_fuse_block_with_a_true_boundary_moves_a_t_junction_and_fixes_a_corner_e
 
     # the corner had no nearby evidence at all -- must not have moved
     assert corner not in result.moved
+
+
+def test_boundary_ring_rejects_a_mismatched_crs():
+    """Regression: _boundary_ring() used to silently unwrap a Geom's bare
+    geometry without ever checking its declared CRS matched -- exactly
+    the "silently coerce" pattern Geom/CRSMismatchError exist to prevent
+    everywhere else in this project."""
+    wrong_crs_boundary = Geom(box(0, 0, 8, 4), "EPSG:4326")  # lon/lat degrees, not UTM metres
+    with pytest.raises(CRSMismatchError):
+        _boundary_ring(wrong_crs_boundary, "EPSG:32643")
+
+
+def test_fuse_block_rejects_a_block_boundary_in_the_wrong_crs():
+    crs = "EPSG:32643"
+    graph = build_graph([Geom(box(0, 0, 4, 4), crs), Geom(box(4, 0, 8, 4), crs)], crs)
+
+    with pytest.raises(CRSMismatchError):
+        fuse_block(
+            graph,
+            list(graph.nodes),
+            style="formal",
+            gt_points=[(4.0, 0.0)],
+            block_boundary=Geom(box(0, 0, 8, 4), "EPSG:4326"),
+        )
 
 
 def test_fuse_node_conflict_without_a_crs_raises_rather_than_faking_one():

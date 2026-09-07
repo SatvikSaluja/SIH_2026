@@ -28,6 +28,26 @@ def test_same_crs_ops_work():
     assert diff.geom.area == 75.0  # a minus the overlap
 
 
+@pytest.mark.parametrize("op", ["intersection", "union", "difference"])
+def test_overlay_ops_snap_to_the_precision_grid(op):
+    """Regression: Geom.intersection/union/difference used to call raw
+    shapely overlay ops with no grid_size -- this project's own canonical
+    "every geometry crossing a module boundary should be a Geom" wrapper
+    had skipped the precision-grid fix this codebase applies everywhere
+    else (a real, reproduced wrong-answer bug from exactly this omission
+    is documented in synth/generator.py's own GRID comment). Two buffered
+    circles give a boundary with many non-round coordinates; if grid_size
+    is really being applied, every output coordinate is an exact multiple
+    of the grid (1e-3)."""
+    a = Geom(Point(0, 0).buffer(5, quad_segs=6), "EPSG:32643")
+    b = Geom(Point(3, 3).buffer(5, quad_segs=6), "EPSG:32643")
+    result = getattr(a, op)(b)
+    coords = list(result.geom.exterior.coords) if result.geom.geom_type == "Polygon" else list(result.geom.coords)
+    for x, y in coords:
+        assert x == pytest.approx(round(x, 3), abs=1e-9)
+        assert y == pytest.approx(round(y, 3), abs=1e-9)
+
+
 @pytest.mark.parametrize("op", ["intersection", "union", "difference", "distance"])
 def test_mismatched_crs_raises_instead_of_silently_coercing(op):
     a = Geom(box(0, 0, 10, 10), "EPSG:32643")
