@@ -7,13 +7,16 @@ vertex-to-vertex between independently-vertexed polygons.
 import numpy as np
 import pytest
 from affine import Affine
-from shapely.geometry import LineString, Point, box
+from shapely.geometry import LinearRing, LineString, Point, box
 
 from geocadastra.core.crs import Geom
 from geocadastra.core.fusion import (
     ConflictRecord,
     SourceEstimate,
     _is_exterior_node,
+    _project_onto_block_boundary,
+    _ring_neighbor_bounds,
+    fuse_block,
     fuse_estimates,
     fuse_node,
     gt_estimate,
@@ -177,6 +180,84 @@ def test_is_exterior_node_false_for_a_genuinely_interior_node():
     assert not _is_exterior_node(graph, interior_node)
     others = [nid for nid in graph.nodes if nid != interior_node]
     assert all(_is_exterior_node(graph, nid) for nid in others)
+
+
+# --- projecting onto the block's own TRUE (authoritative) boundary -------
+# per review: classifying "T-junction vs. true corner" from a NOISY node's
+# own current position doesn't work on this project's real data (real
+# corner deviations and expected noise overlap in magnitude). The correct
+# fix uses the block's own true boundary (from build_blocks(), the road
+# network -- a fixed, more authoritative reference) directly, instead of
+# inferring anything statistically.
+
+_SQUARE_RING = LinearRing(box(0, 0, 8, 4).exterior.coords)  # corners at (0,0),(8,0),(8,4),(0,4)
+
+
+def test_project_onto_block_boundary_slides_a_t_junction_along_the_true_segment():
+    x, y = _project_onto_block_boundary(_SQUARE_RING, 5.0, 1.0)
+    assert (x, y) == pytest.approx((5.0, 0.0))  # nearest point on the bottom edge
+
+
+def test_project_onto_block_boundary_snaps_exactly_to_the_nearest_true_vertex():
+    x, y = _project_onto_block_boundary(_SQUARE_RING, 0.3, 0.2, vertex_snap_tol=1.0)
+    assert (x, y) == (0.0, 0.0)  # exact -- known from the true ring, not a fuzzy inference
+
+
+def test_project_onto_block_boundary_does_not_snap_when_farther_than_the_tolerance():
+    x, y = _project_onto_block_boundary(_SQUARE_RING, 3.0, 0.5, vertex_snap_tol=1.0)
+    assert (x, y) == pytest.approx((3.0, 0.0))  # mid-segment, well past the corner-snap radius
+
+
+def test_project_onto_block_boundary_clamps_between_given_bounds():
+    # this ring's coords start at (8,0) (shapely's own choice, from
+    # box(...).exterior.coords), so the bottom edge (0,0)->(8,0) is
+    # distances [16, 24] along it, not [0, 8] -- a candidate near the
+    # RIGHT edge (20, 2) projects to (8, 2), dist=2, well outside [16,24];
+    # clamped, it must land at whichever end of that range is nearest.
+    assert _SQUARE_RING.length == 24.0
+    x, y = _project_onto_block_boundary(_SQUARE_RING, 20.0, 2.0, dist_lo=16.0, dist_hi=24.0)
+    assert (x, y) == pytest.approx((8.0, 0.0))
+
+
+def test_ring_neighbor_bounds_finds_the_arc_containing_the_nodes_own_position():
+    crs = "EPSG:32643"
+    graph = build_graph([Geom(box(0, 0, 4, 4), crs), Geom(box(4, 0, 8, 4), crs)], crs)
+    t_junction = next(nid for nid, n in graph.nodes.items() if (n.x, n.y) == (4.0, 0.0))
+    lo, hi = _ring_neighbor_bounds(graph, t_junction, _SQUARE_RING)
+    assert lo is not None and hi is not None
+    assert lo <= _SQUARE_RING.project(Point(4.0, 0.0)) <= hi
+
+
+def test_fuse_block_with_a_true_boundary_moves_a_t_junction_and_fixes_a_corner_exactly():
+    """The real, deterministic proof this works: a block whose true shape
+    is the 8x4 rectangle, corrupted, fused with the true boundary given
+    -- a T-junction should improve toward the GT/legacy evidence while
+    staying exactly on the true perimeter, and a corner (given no direct
+    evidence of its own) should stay put or land exactly on its known
+    true position, never drift off the fixed boundary."""
+    crs = "EPSG:32643"
+    graph = build_graph([Geom(box(0, 0, 4, 4), crs), Geom(box(4, 0, 8, 4), crs)], crs)
+    t_junction = next(nid for nid, n in graph.nodes.items() if (n.x, n.y) == (4.0, 0.0))
+    corner = next(nid for nid, n in graph.nodes.items() if (n.x, n.y) == (0.0, 0.0))
+
+    graph.move_node(t_junction, 4.8, 0.9)  # corrupt off the true edge
+
+    gt_xy = [(4.0, 0.0)]  # the T-junction's true position
+    result = fuse_block(
+        graph,
+        list(graph.nodes),
+        style="formal",
+        gt_points=gt_xy,
+        block_boundary=Geom(box(0, 0, 8, 4), crs),
+    )
+
+    assert t_junction in result.moved
+    fused = result.moved[t_junction]
+    assert (fused.x, fused.y) == pytest.approx((4.0, 0.0), abs=0.2)  # pulled back onto the true edge, near true GT
+    assert fused.y == pytest.approx(0.0, abs=1e-6)  # exactly ON the fixed perimeter -- not just "close"
+
+    # the corner had no nearby evidence at all -- must not have moved
+    assert corner not in result.moved
 
 
 def test_fuse_node_conflict_without_a_crs_raises_rather_than_faking_one():

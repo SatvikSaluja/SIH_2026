@@ -29,12 +29,14 @@ from collections import defaultdict
 from dataclasses import dataclass
 
 from geoalchemy2.shape import from_shape, to_shape
+from shapely.errors import GEOSException
 from shapely.geometry import Point
 from shapely.validation import explain_validity
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from geocadastra.core.graph import Edge, Face as GraphFace, Node, PlanarGraph, _round_pt
+from geocadastra.core.planarize import GRID
 from geocadastra.store.provenance import append_provenance
 from geocadastra.store.schema import (
     SRID,
@@ -317,12 +319,34 @@ class ChangesetContext:
         # is a tiny absolute area (~1cm^2) -- far above GEOS float noise at
         # this project's real (UTM) coordinate scale, far below any overlap
         # from an actual crossed edge.
+        #
+        # `grid_size=GRID`: a raw overlay op without an explicit precision
+        # grid can throw shapely.errors.GEOSException ("side location
+        # conflict") on real, individually-valid inputs, not just return
+        # an imprecise number -- this project's own established GEOS
+        # lesson (see geocadastra/core/planarize.py). Found by review:
+        # `grid_size` alone does not eliminate this on real synthetic
+        # data (a near-zero-area internal gap between two parcels -- a
+        # separate, pre-existing Stage 0 generator artifact, see
+        # STAGE_5_NOTES.md -- is numerically pathological enough to still
+        # trip GEOS's overlay robustness). A GEOS exception here means
+        # the SAME thing an actual detected overlap does -- this edit is
+        # not safe to trust -- so it's caught and refused the same way,
+        # rather than left to crash the whole changeset. A crash is
+        # strictly worse than the safe refusal this check exists to
+        # produce.
         for face_id in touched_faces:
             poly = new_polys[face_id].geom
             for other_id, other in new_polys.items():
                 if other_id == face_id:
                     continue
-                overlap = poly.intersection(other.geom).area
+                try:
+                    overlap = poly.intersection(other.geom, grid_size=GRID).area
+                except GEOSException as e:
+                    raise ValueError(
+                        f"block {self.block_id}: this edit makes face {face_id} vs face {other_id} "
+                        f"numerically unsafe to check ({e}) -- refusing to persist"
+                    ) from e
                 if overlap > _OVERLAP_TOL:
                     raise ValueError(
                         f"block {self.block_id}: this edit makes face {face_id} overlap face {other_id} "

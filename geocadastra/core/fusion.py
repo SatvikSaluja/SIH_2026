@@ -34,13 +34,25 @@ the caller's job via `store.changeset.apply_fusion()`, which persists
 each move in its own changeset -- topology, provenance, and (crucially)
 one topologically-unsafe candidate never blocking every other, safe one
 in the same block.
+
+A node on the block's own OUTER boundary needs its own handling
+(`_is_exterior_node`, `_project_onto_block_boundary`,
+`_ring_neighbor_bounds`): fusing it toward a raw evidence-based candidate
+could silently change the block's own enclosed area, which none of the
+INTERNAL-boundary evidence sources above are entitled to do. Given
+`block_boundary` (the block's own TRUE, authoritative exterior, e.g. from
+`build_blocks()`), an exterior candidate is projected exactly onto it
+instead -- correct and tested (see test_fusion.py), though real synthetic
+data can still trip a separate, pre-existing Stage 0 precision issue this
+module works around but does not (and cannot) fully fix -- see
+STAGE_5_NOTES.md.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 
 import numpy as np
-from shapely.geometry import Point
+from shapely.geometry import LinearRing, Point
 from shapely.ops import nearest_points
 
 from geocadastra.core.conflicts import ConflictRecord, max_pairwise_disagreement
@@ -226,33 +238,146 @@ def _is_exterior_node(graph: PlanarGraph, node_id: int) -> bool:
     edge) at all, as opposed to a purely interior parcel-to-parcel
     boundary.
 
-    Deliberately all-or-nothing -- an earlier version tried to let a
-    T-junction (where an interior cut meets an otherwise-straight run of
-    the perimeter) slide along its own fixed line, since this project's
-    own recursive/organic ("informal") subdivision generator makes almost
-    every interior edge's endpoints land back on the exterior ring too
-    (blanket exclusion made fusion a near no-op for the majority block
-    style). That needed a tolerance separating "T-junction with ordinary
-    legacy-scale noise on its current position" from "a genuine corner
-    where the perimeter changes direction" -- and on this project's own
-    data, those two things overlap in magnitude (informal blocks have
-    real corners as gentle as ~2.5m of perpendicular deviation, well
-    inside the ~9m noise a 3-sigma legacy tolerance has to tolerate), so
-    no single threshold safely tells them apart. Found by review via the
-    Stage 5 topology-invariant acceptance test: a too-generous tolerance
-    let a genuine corner slide, drifting total block area by ~100m^2
-    without tripping the overlap or self-intersection guards at all.
-    Per this project's own rule ("prefer deleting a feature to shipping
-    it untested"), reverted to the simple, provably-safe version: an
-    exterior node never moves. Fusion's practical reach on a block whose
-    every corner touches its own perimeter is a real, honest scope limit,
-    not a bug -- see STAGE_5_NOTES.md.
+    An exterior node is never moved to a raw fused position: doing so
+    could change the block's own enclosed area, since a node here can be
+    either a T-junction on an otherwise-straight run of the perimeter
+    (safe to slide ALONG it) or a genuine corner where the perimeter
+    changes direction (must not move at all) -- and telling those apart
+    from the node's own (possibly noisy) current position alone doesn't
+    work on this project's real data: informal blocks have genuine
+    corners as gentle as ~2.5m of perpendicular deviation, overlapping
+    the ~9m of ordinary legacy-scale noise a 3-sigma tolerance has to
+    accept, so no fixed threshold safely separates them (confirmed: a
+    too-generous tolerance let a real corner drift, silently changing
+    total block area by ~100m^2 with neither the overlap nor
+    self-intersection guard tripping).
+
+    `fuse_block`'s `block_boundary` parameter is the real fix, not a
+    local inference: given the block's own TRUE, authoritative exterior
+    (from `build_blocks()` -- the road network, not derived from noisy
+    parcel-level data), `_project_onto_block_boundary()` can tell a
+    T-junction from a corner exactly (nearest point on a KNOWN ring,
+    compared against that ring's own KNOWN vertices) rather than
+    statistically. Without `block_boundary`, this function's boolean
+    answer is used directly and an exterior node never moves at all --
+    the simple, provably-safe fallback per this project's own rule
+    ("prefer deleting a feature to shipping it untested"), still correct,
+    just less capable.
     """
     return any(
         OUTER in graph.faces_of_edge(edge.id)
         for edge in graph.edges.values()
         if edge.n0 == node_id or edge.n1 == node_id
     )
+
+
+def _boundary_ring(block_boundary) -> LinearRing:
+    """Accept a `Geom`, a shapely Polygon, or an already-built
+    LinearRing/LineString for the block's own true exterior, and return a
+    LinearRing -- one normalized shape callers don't each have to handle."""
+    geom = block_boundary.geom if isinstance(block_boundary, Geom) else block_boundary
+    if geom.geom_type == "Polygon":
+        return LinearRing(geom.exterior.coords)
+    if geom.geom_type == "LinearRing":
+        return geom
+    return LinearRing(geom.coords)  # a LineString ring (e.g. .boundary of a Polygon)
+
+
+def _project_onto_block_boundary(
+    ring: LinearRing,
+    x: float,
+    y: float,
+    dist_lo: float | None = None,
+    dist_hi: float | None = None,
+    vertex_snap_tol: float = 1.0,
+) -> tuple[float, float]:
+    """Project `(x, y)` onto `ring` -- shapely's own `project()`/
+    `interpolate()`, not hand-rolled point-to-segment math (this
+    project's own rule: "do not hand-roll floating-point node snapping").
+
+    If the projected point falls within `vertex_snap_tol` of one of the
+    ring's own vertices, snaps EXACTLY to that vertex instead of the
+    literal projection -- a true corner, known exactly from the
+    authoritative boundary, so this is a plain coordinate comparison
+    against known points, not a statistical inference from noisy data
+    (contrast `_is_exterior_node`'s docstring on why that doesn't work).
+
+    `dist_lo`/`dist_hi` (from `_ring_neighbor_bounds` -- NOT necessarily
+    within `ring`'s own native `[0, ring.length)` range; see there for
+    why) clamp the result so it can't slide past a given bound -- one
+    node's fused candidate must not be able to jump past an adjacent
+    one, folding the ring's own walk order without ever tripping the
+    overlap or self-intersection guards (found by review: an earlier,
+    unclamped version of a similar projection let exactly this happen,
+    silently changing total block area).
+    """
+    length = ring.length
+    dist = ring.project(Point(x, y))
+    if dist_lo is not None and dist_hi is not None:
+        # `dist` is shapely's own [0, length) parametrization, but the
+        # valid [dist_lo, dist_hi] range may already have been shifted
+        # outside that (see _ring_neighbor_bounds) to correctly represent
+        # an arc that wraps the ring's own coordinate-list seam. Re-express
+        # `dist` as whichever of its (infinitely many, length-periodic)
+        # equivalent values sits nearest the middle of that range, clamp
+        # in that shared numbering, then wrap the final answer back into
+        # [0, length) for interpolate().
+        center = (dist_lo + dist_hi) / 2
+        dist += length * round((center - dist) / length)
+        dist = min(max(dist, dist_lo), dist_hi)
+        dist %= length
+    proj = ring.interpolate(dist)
+    vertices = list(ring.coords)
+    nearest_vertex = min(vertices, key=lambda c: (c[0] - proj.x) ** 2 + (c[1] - proj.y) ** 2)
+    vertex_dist = ((nearest_vertex[0] - proj.x) ** 2 + (nearest_vertex[1] - proj.y) ** 2) ** 0.5
+    if vertex_dist <= vertex_snap_tol:
+        return nearest_vertex[0], nearest_vertex[1]
+    return proj.x, proj.y
+
+
+def _ring_neighbor_bounds(graph: PlanarGraph, node_id: int, ring: LinearRing):
+    """This node's two OUTER-adjacent ring-neighbors' own current
+    positions, projected onto `ring` -- the `dist_lo, dist_hi` bound
+    `_project_onto_block_boundary` needs. `None, None` if this node
+    doesn't have exactly two OUTER-adjacent neighbors (not a simple ring
+    point; caller should treat that as "don't move, don't risk it").
+
+    Correctly handles the ring's own coordinate-list seam (the arbitrary
+    point where its `[0, ring.length)` parametrization wraps from the
+    last vertex back to the first) -- a plain `sorted(dist_a, dist_b)`
+    gives the WRONG (and silently, not safely, wrong: the result still
+    lands validly on the ring, so no downstream guard catches it) arc
+    whenever a neighbor happens to be near that seam, which is common,
+    not rare (found by review reproducing it in the very first hand-built
+    test case tried). Fixed with the standard trick for clamping on a
+    circle: re-express each neighbor's distance as a SIGNED offset from
+    this node's own current position, choosing the shorter of the two
+    ways around the ring -- which is unambiguous as long as the node's
+    own two immediate neighbors are (as they always are here) much less
+    than half the ring's total length apart, true for any block with more
+    than a couple of exterior points.
+    """
+    outer_neighbors = []
+    for e in graph.edges.values():
+        if OUTER not in graph.faces_of_edge(e.id):
+            continue
+        other = e.n1 if e.n0 == node_id else (e.n0 if e.n1 == node_id else None)
+        if other is not None:
+            outer_neighbors.append(other)
+    if len(outer_neighbors) != 2:
+        return None, None
+    node = graph.nodes[node_id]
+    a, b = graph.nodes[outer_neighbors[0]], graph.nodes[outer_neighbors[1]]
+    length = ring.length
+    dist_node = ring.project(Point(node.x, node.y))
+
+    def _signed_offset(dist_other: float) -> float:
+        return (dist_other - dist_node + length / 2) % length - length / 2
+
+    offset_a = _signed_offset(ring.project(Point(a.x, a.y)))
+    offset_b = _signed_offset(ring.project(Point(b.x, b.y)))
+    lo, hi = min(offset_a, offset_b), max(offset_a, offset_b)
+    return dist_node + lo, dist_node + hi
 
 
 def fuse_block(
@@ -269,6 +394,9 @@ def fuse_block(
     capture_radius: float = DEFAULT_CAPTURE_RADIUS,
     sigma_legacy_by_style: dict = DEFAULT_SIGMA_LEGACY_BY_STYLE,
     sigma_gt: float = DEFAULT_SIGMA_GT,
+    block_boundary=None,
+    vertex_snap_tol: float = 1.0,
+    max_boundary_distance: float = 5.0,
 ) -> FuseBlockResult:
     """Fuse every node in `node_ids` (one block's worth -- "blocks are the
     unit of work"), against a single shared set of sources. Doesn't move
@@ -277,24 +405,55 @@ def fuse_block(
     changeset (so one topologically-unsafe candidate can't block every
     other, safe one in the same block) with correct provenance.
 
-    A node on the block's own OUTER (road) boundary is never fused, no
-    matter what's in `node_ids` -- silently routed to `.unchanged`, same
-    bucket as "no source had any information here". A block's exterior
-    comes from the road network, a fixed, more authoritative reference
-    than any parcel-level evidence source here; `transport.py`'s own
-    `parcels_to_graph()` sets the same precedent (the block boundary is
-    passed to `planarize()` as authoritative `fixed` linework). See
-    `_is_exterior_node()` for why this is all-or-nothing rather than
-    letting a boundary-adjacent node slide along its own fixed edge.
+    A node on the block's own OUTER (road) boundary is never moved to a
+    raw fused position, since that could change the block's own enclosed
+    area (a fixed, more authoritative reference than any parcel-level
+    evidence source here -- `transport.py`'s own `parcels_to_graph()`
+    sets the same precedent, passing the block boundary to `planarize()`
+    as authoritative `fixed` linework).
+
+    `block_boundary` (a `Geom`/Polygon/ring -- e.g. straight from
+    `build_blocks()`'s own output for this block) is what makes an
+    exterior node's fusion actually work correctly rather than just
+    safely: its candidate is projected exactly onto that TRUE boundary
+    (`_project_onto_block_boundary`) -- sliding along a straight run if
+    it's a T-junction, or snapping to the exact known position if it's a
+    real corner -- so area is preserved by construction, not by refusing
+    to move the node at all. Without `block_boundary`, an exterior node
+    is simply left unchanged (routed to `.unchanged`), the earlier,
+    simpler, still-correct-but-more-limited behavior (see
+    `_is_exterior_node`'s docstring for why inferring corner-vs-T-junction
+    from the node's own current position doesn't work on this project's
+    data, which is why this needs the true boundary rather than a
+    tolerance).
+
+    `max_boundary_distance` is a sanity check on `block_boundary` itself:
+    an exterior node farther than this from the given boundary is left
+    unchanged rather than projected -- found by review on REAL synthetic
+    data (not a hand-built test): this project's recursive-split parcel
+    generator can leave a near-zero-area but real-extent internal gap
+    between two parcels that should be exactly adjacent (a GEOS precision
+    artifact, not a Stage 5 concern -- see STAGE_5_NOTES.md), which
+    `build_graph()` has no way to distinguish from the block's own true
+    exterior: both look identical (an edge with `OUTER` as one face-side)
+    from the graph alone. A node on such a gap is nowhere near the real
+    perimeter (measured up to ~16m away on one real block), so blindly
+    projecting it onto `block_boundary` produces a confidently wrong
+    answer -- silently valid-looking (the point IS genuinely on the ring)
+    but geometrically nonsensical. This check is what makes that fail
+    safe (left alone) instead of failing wrong.
     """
+    ring = _boundary_ring(block_boundary) if block_boundary is not None else None
     moved: dict = {}
     conflicts: list = []
     unchanged: list = []
     for node_id in node_ids:
-        if _is_exterior_node(graph, node_id):
-            unchanged.append(node_id)
-            continue
+        is_exterior = _is_exterior_node(graph, node_id)
         node = graph.nodes[node_id]
+        if is_exterior:
+            if ring is None or ring.distance(Point(node.x, node.y)) > max_boundary_distance:
+                unchanged.append(node_id)
+                continue
         result = fuse_node(
             (node.x, node.y),
             face_ids=_incident_face_ids(graph, node_id),
@@ -315,6 +474,15 @@ def fuse_block(
             unchanged.append(node_id)
         elif isinstance(result, ConflictRecord):
             conflicts.append(result)
+        elif is_exterior:
+            dist_lo, dist_hi = _ring_neighbor_bounds(graph, node_id, ring)
+            if dist_lo is None:
+                unchanged.append(node_id)  # not a simple ring point -- don't risk it
+                continue
+            px, py = _project_onto_block_boundary(
+                ring, result.x, result.y, dist_lo, dist_hi, vertex_snap_tol=vertex_snap_tol
+            )
+            moved[node_id] = FusedPosition(x=px, y=py, sigma=result.sigma, sources=result.sources)
         else:
             moved[node_id] = result
     return FuseBlockResult(moved=moved, conflicts=conflicts, unchanged=unchanged)

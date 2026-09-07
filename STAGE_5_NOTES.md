@@ -15,30 +15,37 @@ the zero set", since the model's own SDF output already IS a distance
 field), `gt_estimate()` (nearest GT point, but only within a capture
 radius -- beyond it, *no* estimate at all, not a low-confidence one, per
 the doc's "carries no information outside it"). `fuse_estimates()`
-inverse-variance-weights whichever sources actually apply -- the
-closed-form combination of independent Gaussian estimates, so "a confident
-source dominates" and "two agreeing sources beat either alone" both fall
-out for free. `fuse_node()`/`fuse_block()` tie it together per node and
-per block; disagreement beyond `tolerance` becomes a `ConflictRecord`
-instead of an average, per doc.
+inverse-variance-weights whichever sources actually apply. `fuse_node()`/
+`fuse_block()` tie it together per node and per block; disagreement beyond
+`tolerance` becomes a `ConflictRecord` instead of an average, per doc.
+
+An exterior (block-perimeter) node gets separate handling --
+`_is_exterior_node()`, and, when a `block_boundary` is given,
+`_project_onto_block_boundary()` / `_ring_neighbor_bounds()` project its
+candidate exactly onto the block's own TRUE boundary (sliding along a
+straight run, or snapping exactly to a known corner) instead of ever
+moving freely. See "Making exterior fusion actually work" below --  this
+went through several real design iterations, not just the first one that
+compiled.
 
 `geocadastra/store/changeset.py`: `ChangesetContext.move_node()` gained an
 optional `evidence_type`/`detail` override (default still `"manual_edit"`,
 zero behavior change for every existing caller) so a fusion-driven move is
 honestly attributed in provenance. `apply_fusion()` applies a
-`fuse_block()` result's moves one at a time, each in its own changeset --
-see Review below for why that's not just a style choice.
+`fuse_block()` result's moves one at a time, each in its own changeset.
 
-Tests: `test_fusion.py` (21), `test_conflicts.py` (4),
-`test_stage5_fusion_acceptance.py` (3, the stage's own Done-when), plus 3
-new regression tests in `test_changeset.py`. 272 tests pass across all
-five stages (`pytest geocadastra/ -q -m "not slow"`, ~150s).
+Tests: `test_fusion.py` (24), `test_conflicts.py` (3),
+`test_stage5_fusion_acceptance.py` (5: 3 fast + 2 `slow`, one of the slow
+ones `xfail`), plus 5 regression tests in `test_changeset.py`. 278 tests
+pass across all five stages (`pytest geocadastra/ -q -m "not slow"`,
+~130s); the 2 real-data `slow` tests add ~110s more.
 
 ## Full multi-angle review (post-build)
 This stage's review was almost entirely about topology safety under
 multi-node edits -- the doc's own words turned out to be exactly right:
 *"after fusion, every Stage 1 topology invariant still holds. That second
-assertion is the one that catches the classic bug."* It did.
+assertion is the one that catches the classic bug."* It did, repeatedly,
+at every level of increasing rigor this review pushed to.
 
 - **`ChangesetContext` checked a face against itself, never against every
   OTHER face.** The existing `is_valid()` guard catches one face
@@ -60,6 +67,18 @@ assertion is the one that catches the classic bug."* It did.
   node's own incident-faces' centroid, re-checked after every halving --
   a plain "move it a smaller amount" direction heuristic alone was not
   reliably safe either, confirmed by testing it).
+- **The overlap check itself could crash instead of refusing cleanly.**
+  `poly.intersection(other.geom)` without an explicit precision grid can
+  throw `shapely.errors.GEOSException` ("side location conflict") on
+  real, individually-valid inputs -- this project's own established GEOS
+  lesson, rediscovered here: adding `grid_size=GRID` reduces but does not
+  eliminate this on real synthetic data (reproduced: still crashes on 3
+  of 8 real blocks tested). Fixed by also catching `GEOSException` around
+  the check and refusing the edit the same way an actual detected overlap
+  does -- a numerically pathological comparison means the same thing
+  ("don't trust this edit") regardless of whether it manifests as a
+  computed number or a raised exception. A crash is strictly worse than
+  the safe refusal this check exists to produce.
 - **Bundling a whole block's fusion moves into one changeset meant one
   unsafe candidate blocked every other, safe one.** `legacy_estimate()`'s
   "nearest point on the block's legacy linework" has no awareness of
@@ -72,52 +91,112 @@ assertion is the one that catches the classic bug."* It did.
   changeset meant the 31 good ones were held hostage by the 21 bad ones.
   Fixed: `apply_fusion()` applies each move in its own changeset, catching
   a refusal and recording it (`.topology_refused`) instead of aborting
-  the block -- "nothing is silently resolved" applied to a new failure
-  mode (evidence disagreeing with existing *topology*, not just with
-  another source).
-- **Fusion could silently move the block's own exterior, changing its
-  total area.** Nothing distinguished a node on the block's true perimeter
-  (road-derived, fixed) from an ordinary interior parcel corner --
-  `legacy_estimate()` could pull an exterior node toward a legacy-shifted
-  position, changing the enclosed area the Stage 1 "total face area
-  equals input domain area" invariant checks. An attempted fix that let a
-  perimeter node slide along its own straight run (common in this
-  project's own data -- see below) turned out to need a tolerance
-  separating "ordinary legacy-scale noise" from "a real corner", and on
-  this project's actual synthetic data those two overlap in magnitude (an
-  informal block can have a genuine corner as gentle as ~2.5m of
-  deviation, well inside the ~9m of noise a 3-sigma legacy tolerance has
-  to accept) -- no single threshold safely told them apart, and a
-  too-generous one let a real corner drift ~100m² of area with neither
-  the overlap nor the self-intersection guard ever tripping. Per this
-  project's own rule ("prefer deleting a feature to shipping it
-  untested"), reverted to the simple, provably-safe version: an exterior
-  node never moves, full stop.
+  the block.
 - **A conflict record's `geometry` had a silent fallback to a fake CRS.**
   `fuse_node()` originally defaulted to `"unspecified"` when no `crs` was
   given, directly violating this project's own invariant ("never let a
   geometry cross a module boundary without a declared CRS"). Fixed to
   raise instead -- a caller error, not something to paper over.
 
-## A structural finding about the interaction between Stage 0 and Stage 5
-Every one of this project's three block-subdivision styles
-(`_strip_split`, `_recursive_split`'s single institutional cut, and its
-recursive informal case) produces layouts where **every interior
-parcel-to-parcel edge's endpoints land back on the block's own true
-perimeter** -- confirmed by reading the generator and empirically across
-40 real synthetic seeds (zero genuinely interior nodes, every time). This
-means fusion, correctly refusing to ever move an exterior node, currently
-has *no* node it's allowed to move on a typical generated ward's own
-blocks -- `test_exterior_nodes_are_never_moved_by_fusion` locks this in as
-an explicit, tested property rather than a silent no-op. The real
-"evidence corrects an imprecise position" mechanism is fully built,
-tested, and demonstrated (`test_gt_points_improve_accuracy_near_them_
-without_degrading_elsewhere`, `test_topology_invariants_still_hold_after_
-fusion`) against a deterministic hand-built grid with genuine interior
-structure, matching the precedent already set for the overlap regression
-test. Whether Stage 0's generator should grow a layout style with real
-interior structure (a genuine internal lane, say) is a legitimate future
-item, not something this stage's own scope covers.
+## Making exterior fusion actually work (not just safely refuse)
+The first, simplest fix for "fusion could silently move the block's own
+exterior, changing its total area" was to just never move an exterior
+node at all. Asked explicitly to not settle for that if a correct,
+tested, more capable version was achievable -- so it was tried, properly,
+through several real iterations:
+
+1. **Infer corner-vs-T-junction from the node's own current position.**
+   Needs a tolerance separating "ordinary legacy-scale noise" from "a
+   real corner (perimeter changes direction)". On this project's actual
+   data those two overlap in magnitude (an informal block can have a
+   genuine corner as gentle as ~2.5m of deviation, well inside the ~9m of
+   noise a 3-sigma legacy tolerance has to accept) -- no fixed threshold
+   safely told them apart, and a too-generous one let a real corner
+   drift, changing area with neither the overlap nor self-intersection
+   guard tripping. **Rejected** -- confirmed to fail on real data, not
+   just reasoned about.
+2. **Project onto the block's own TRUE boundary instead** (from
+   `build_blocks()` -- the road network, a fixed, more authoritative
+   reference; same precedent as `transport.py`'s `parcels_to_graph()`
+   passing the block boundary to `planarize()` as `fixed` linework).
+   Requires correctly clamping a node's slide to stay between its
+   immediate ring-neighbors, which requires correctly handling the
+   ring's own arbitrary coordinate-list seam (`shapely.project()`'s
+   `[0, length)` parametrization wraps there) -- a plain
+   `sorted(dist_a, dist_b)` gives the WRONG arc whenever a neighbor is
+   near that seam, and this is common, not rare: it reproduced in the
+   very first hand-built test case tried. Fixed with the standard
+   "shortest signed offset on a circle" trick
+   (`_ring_neighbor_bounds`), verified with a dedicated test built
+   specifically to sit on the seam. The projection itself
+   (`_project_onto_block_boundary`) uses shapely's own `project()`/
+   `interpolate()` (never hand-rolled point-to-segment math, per this
+   project's own rule), clamped between the ring-neighbor bounds so a
+   candidate can't slide past an adjacent node and fold the ring's own
+   walk order.
+3. **Verified against real synthetic data, not just clean hand-built
+   cases -- and that surfaced a real, separate Stage 0 defect.** This
+   project's recursive-split parcel generator can leave a near-zero-area
+   but real-extent internal gap between two parcels that should be
+   exactly adjacent (confirmed directly: `unary_union()` of one real
+   block's 25 parcels has an actual hole, ~2e-8 m² but spanning 37m of
+   extent -- a GEOS precision artifact in `_recursive_split`'s repeated
+   `split()`+`set_precision()` calls, not a Stage 5 concern). A node on
+   that gap's edge registers as "OUTER-adjacent" identically to a node on
+   the block's real perimeter -- nothing in the graph alone can tell them
+   apart -- and was measured up to ~16m from the block's TRUE boundary,
+   so blindly projecting it produced a confidently wrong (not obviously
+   invalid) answer. Fixed with `max_boundary_distance`: an exterior node
+   farther than this from the given boundary is left alone rather than
+   projected, since a genuine perimeter point has no reason to be that
+   far from its own true boundary regardless of ordinary noise.
+4. **A follow-up hypothesis (add a general "combined touched-face area
+   must be conserved" check to `ChangesetContext._persist()`) was tried
+   and correctly reverted.** Reasoned that any topologically valid
+   single-node move should conserve its incident faces' combined area --
+   this is FALSE in general (directly disproved: moving one shared
+   vertex of two adjacent 2x2 squares from its original position to a
+   point 8 units away changes that single face's area from 4.0 to 2.0,
+   with nothing invalid about the edit). The check, once added, promptly
+   refused several ordinary, perfectly legitimate edits in the existing
+   Stage 2 test suite. Reverted -- area conservation is a real property
+   Stage 5 specifically wants for its OWN exterior-node handling (via the
+   ring projection, by construction), not a general `ChangesetContext`
+   invariant; a wrong general fix is worse than no fix.
+5. **A "41 m² overlap slipped through the safety net" scare turned out to
+   be a test-methodology bug, not a Stage 5 regression.** `ward.blocks[i]
+   .id` restarts at 0 for every `generate_ward()` call; a test iterating
+   several seeds against the same `db_session` reused that id directly as
+   the DB block_id, silently conflating two entirely unrelated wards'
+   geometry under one block -- of course two different wards' faces can
+   "overlap" once merged into the same block. Fixed the test (a unique
+   per-iteration block_id); re-verified the real safety property (no
+   overlap, no invalid face) genuinely holds, across 10+ real ward
+   blocks, once the test itself was measuring the right thing. A separate,
+   even simpler own manual verification script had *also* been silently
+   swallowing a `GEOSException` into "no overlap detected" instead of
+   surfacing it (`except Exception: ov = -1`) -- worth remembering: an
+   exception-swallowing measurement script can look like a passing
+   result and mean nothing.
+
+**Net result**: `fuse_block(..., block_boundary=...)` is a real,
+substantially more capable, and verified-safe mechanism -- 80-93% of
+candidate exterior-node improvements apply successfully on real synthetic
+blocks (`test_block_boundary_fusion_never_produces_overlapping_or_invalid
+_geometry_on_real_wards`, `slow`), with zero overlaps and zero invalid
+faces confirmed directly, not assumed. The one property NOT reliably met
+on real data is exact total-area conservation (Stage 1's own
+domain-scaled tolerance) -- root-caused to the Stage 0 recursive-split
+issue in point 3 above (projecting onto `block.polygon` when it isn't
+quite the same shape the rest of the untouched graph already assumes),
+confirmed independent of Stage 5's own logic (baseline, zero-fusion graphs
+already match the domain area to float precision; the drift is
+specifically introduced by projecting onto a boundary that's a slightly
+different shape). Tracked honestly, not hidden or weakened:
+`test_block_boundary_fusion_conserves_total_area_on_real_wards`,
+`xfail(strict=False)`, reports real numbers on failure. Fixing it needs
+Stage 0's recursive-split precision fixed (a separate undertaking,
+flagged here, not pursued in this stage without being asked).
 
 ## Deferred (correctly, per this stage's own scope)
 - Conflict records are returned in-memory, not persisted to the store --
@@ -128,3 +207,7 @@ item, not something this stage's own scope covers.
   model's output in this stage's own tests -- consistent with Stage 4's
   own honestly-tracked accuracy gap; revisit together once GPU-scale
   training lands.
+- The Stage 0 recursive-split precision defect (internal near-zero-area
+  holes, boundary-shape drift from the input polygon) found during this
+  review is real and root-caused but not fixed here -- it's Stage 0's
+  code, out of this stage's own scope unless asked to pursue it.
