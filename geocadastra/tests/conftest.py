@@ -60,6 +60,15 @@ def db_session(db_engine):
     connection.close()
 
 
+# every table a real-commit test might touch, in an order TRUNCATE...CASCADE
+# handles regardless (CASCADE covers FK order) -- one list shared by both
+# fixtures below so a Stage 8 table added to schema.py only needs adding here
+_ALL_TABLES = (
+    "provenance", "conflicts", "survey_points", "legacy_records", "recorded_parcels",
+    "ingested_blocks", "block_jobs", "ward_jobs", "face_boundaries", "faces", "edges", "nodes", "changesets",
+)
+
+
 @pytest.fixture()
 def concurrent_sessions(db_engine):
     """Two genuinely independent sessions (separate connections, each free
@@ -67,7 +76,7 @@ def concurrent_sessions(db_engine):
     concurrency -- `db_session`'s single-shared-transaction isolation can't
     exercise that. A real commit here isn't auto-rolled-back, so the test
     itself is responsible for deleting whatever it created (a `TRUNCATE` of
-    every Stage 2 table, in dependency order, at teardown -- simpler and
+    every real table, in dependency order, at teardown -- simpler and
     less error-prone than per-row tracking with composite primary keys)."""
     from sqlalchemy.orm import sessionmaker as _sessionmaker
 
@@ -76,8 +85,28 @@ def concurrent_sessions(db_engine):
     yield s1, s2
     s1.rollback()
     s2.rollback()
-    for table in ("provenance", "face_boundaries", "faces", "edges", "nodes", "changesets"):
+    for table in _ALL_TABLES:
         s1.execute(text(f"TRUNCATE TABLE {table} CASCADE"))
     s1.commit()
     s1.close()
     s2.close()
+
+
+@pytest.fixture()
+def committed_session(db_engine):
+    """One real-commit session (Stage 8: Celery tasks open their OWN
+    session per `db_url`/`schema`, separate from whatever session a test
+    uses to set up fixtures or assert on results afterward -- a rolled-
+    back `db_session` transaction would be invisible to that separate
+    connection, exactly the way a real worker process's session can't see
+    a test's own uncommitted setup). Same real-commit-needs-real-cleanup
+    contract as `concurrent_sessions`."""
+    from sqlalchemy.orm import sessionmaker as _sessionmaker
+
+    session = _sessionmaker(bind=db_engine)()
+    yield session
+    session.rollback()
+    for table in _ALL_TABLES:
+        session.execute(text(f"TRUNCATE TABLE {table} CASCADE"))
+    session.commit()
+    session.close()

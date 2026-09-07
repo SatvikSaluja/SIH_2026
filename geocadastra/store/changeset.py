@@ -59,7 +59,14 @@ class ConcurrentModificationError(RuntimeError):
 _OVERLAP_TOL = 1e-4  # m^2 -- see _persist()'s cross-face overlap check
 
 
-def _allocate_ids(session: Session, seq, n: int) -> list[int]:
+def allocate_ids(session: Session, seq, n: int) -> list[int]:
+    """`n` fresh values from `seq`, in one round trip. Public (not `_`-
+    prefixed) since `jobs/orchestrator.py`'s own `ingest_synthetic_ward()`
+    needs the exact same "remap a synthetic object's own restarts-at-0 ids
+    onto globally-unique ones before writing" pattern this function
+    already existed for -- one shared helper, not a second copy of the
+    same `nextval()`-over-`generate_series()` trick.
+    """
     if n == 0:
         return []
     return list(session.execute(text(f"SELECT nextval('{seq.name}') FROM generate_series(1, :n)"), {"n": n}).scalars())
@@ -147,9 +154,9 @@ def seed_block_graph(
     node_ids = list(graph.nodes)
     edge_ids = list(graph.edges)
     face_ids = list(graph.faces)
-    node_id_map = dict(zip(node_ids, _allocate_ids(session, node_id_seq, len(node_ids))))
-    edge_id_map = dict(zip(edge_ids, _allocate_ids(session, edge_id_seq, len(edge_ids))))
-    face_id_map = dict(zip(face_ids, _allocate_ids(session, face_id_seq, len(face_ids))))
+    node_id_map = dict(zip(node_ids, allocate_ids(session, node_id_seq, len(node_ids))))
+    edge_id_map = dict(zip(edge_ids, allocate_ids(session, edge_id_seq, len(edge_ids))))
+    face_id_map = dict(zip(face_ids, allocate_ids(session, face_id_seq, len(face_ids))))
 
     session.bulk_insert_mappings(
         NodeVersion,

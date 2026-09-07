@@ -24,3 +24,11 @@ scikit-image==0.26.0   # SLIC superpixels, watershed fallback
 torch==2.14.0
 torchvision==0.29.0
 timm==1.0.29            # pretrained=False backbones (features_only=True) for the shared trunk
+
+# Stage 8: orchestration and API.
+fastapi==0.141.1
+uvicorn==0.52.4
+celery==5.6.3
+redis==8.1.0            # the Celery broker's Python client -- a real Redis server is a deploy-time
+                         # dependency, not a test one: tests run Celery in eager mode (no broker needed)
+httpx==0.28.1            # FastAPI's own TestClient needs it; already a transitive dep, pinned explicitly
