@@ -3,18 +3,26 @@ store, an edit to a shared boundary node updates both adjacent parcels
 consistently in one transaction, and replaying the versioned log from
 empty reconstructs the same current state a direct "latest version" query
 gives."""
+import copy
 import threading
 import time
 
 import pytest
 from geoalchemy2.shape import from_shape, to_shape
-from shapely.geometry import Point, Polygon
+from shapely.geometry import Point, Polygon, box
 from sqlalchemy import select, text
 
 from geocadastra.core.crs import Geom
-from geocadastra.core.graph import build_graph
+from geocadastra.core.fusion import FusedPosition, FuseBlockResult
+from geocadastra.core.graph import OUTER, build_graph
 from geocadastra.synth.generator import generate_ward
-from geocadastra.store.changeset import ChangesetContext, ConcurrentModificationError, load_block_graph, seed_block_graph
+from geocadastra.store.changeset import (
+    ChangesetContext,
+    ConcurrentModificationError,
+    apply_fusion,
+    load_block_graph,
+    seed_block_graph,
+)
 from geocadastra.store.provenance import append_provenance, verify_chain
 from geocadastra.store.schema import SRID, Changeset, EdgeVersion, Face, FaceBoundary, NodeVersion, Provenance
 
@@ -42,6 +50,51 @@ def _seed_a_multiparcel_block(session, seed=1):
     raise AssertionError("could not find a multi-parcel block across 20 seeds")
 
 
+def _any_face_overlap(polys, tol=1e-4) -> bool:
+    ids = list(polys)
+    return any(
+        polys[ids[i]].geom.intersection(polys[ids[j]].geom).area > tol
+        for i in range(len(ids))
+        for j in range(i + 1, len(ids))
+    )
+
+
+def _safe_nudge(graph, node_id, magnitude=0.05, max_tries=20):
+    """A small, *verified* displacement -- toward this node's own incident
+    faces' combined centroid (a direction unlikely to cross into unrelated
+    territory), backing off by half each try until the result actually has
+    no cross-face overlap. Found by review (via Stage 5's stricter
+    topology-invariant check): this synthetic generator's parcels are
+    close/thin enough in places that even a small move in an arbitrary
+    direction -- including, for some nodes, *toward the centroid itself*
+    -- can create a real overlap with a face the moved node isn't even
+    incident to. A direction heuristic alone isn't a guarantee; checking
+    the actual result is (see ChangesetContext._persist()'s own matching
+    check, which this mirrors so the test verifies what production
+    enforces)."""
+    incident_faces = {
+        fid for e in graph.edges.values() if node_id in (e.n0, e.n1) for fid in graph.faces_of_edge(e.id) if fid != OUTER
+    }
+    polys = graph.faces_to_polygons()
+    cx = sum(polys[fid].geom.centroid.x for fid in incident_faces) / len(incident_faces)
+    cy = sum(polys[fid].geom.centroid.y for fid in incident_faces) / len(incident_faces)
+    n = graph.nodes[node_id]
+    dx, dy = cx - n.x, cy - n.y
+    norm = (dx**2 + dy**2) ** 0.5
+    if norm < 1e-9:
+        dx, dy = 1.0, 0.0  # degenerate: node already sits at its own incident-faces' centroid
+    else:
+        dx, dy = dx / norm, dy / norm
+
+    for attempt in range(max_tries):
+        step = magnitude / (2**attempt)
+        trial = copy.deepcopy(graph)
+        trial.move_node(node_id, n.x + dx * step, n.y + dy * step)
+        if not _any_face_overlap(trial.faces_to_polygons()):
+            return dx * step, dy * step
+    raise AssertionError(f"no safe nudge found for node {node_id} after {max_tries} tries")
+
+
 def test_editing_a_shared_node_updates_both_adjacent_faces_consistently(db_session):
     block_id, graph = _seed_a_multiparcel_block(db_session)
 
@@ -53,8 +106,9 @@ def test_editing_a_shared_node_updates_both_adjacent_faces_consistently(db_sessi
     before_a = to_shape(db_session.get(Face, face_a_id).geom)
     before_b = to_shape(db_session.get(Face, face_b_id).geom)
 
+    dx, dy = _safe_nudge(graph, node_id)
     with ChangesetContext(db_session, block_id=block_id, description="move shared node") as cs:
-        cs.move_node(node_id, old.x + 1.0, old.y + 1.0)
+        cs.move_node(node_id, old.x + dx, old.y + dy)
 
     after_a = to_shape(db_session.get(Face, face_a_id).geom)
     after_b = to_shape(db_session.get(Face, face_b_id).geom)
@@ -142,8 +196,9 @@ def test_editing_a_node_records_provenance_for_every_affected_edge(db_session):
     affected_edges = {e.id for e in graph.edges.values() if node_id in (e.n0, e.n1)}
     assert affected_edges
 
+    dx, dy = _safe_nudge(graph, node_id)
     with ChangesetContext(db_session, block_id=block_id) as cs:
-        cs.move_node(node_id, n.x + 1.0, n.y + 1.0)
+        cs.move_node(node_id, n.x + dx, n.y + dy)
 
     rows = db_session.query(Provenance).filter(Provenance.edge_id.in_(affected_edges)).all()
     assert {r.edge_id for r in rows} == affected_edges
@@ -151,6 +206,92 @@ def test_editing_a_node_records_provenance_for_every_affected_edge(db_session):
         assert r.evidence_type == "manual_edit"
         assert r.payload["moved_nodes"] == [node_id]
     assert verify_chain(db_session) is True
+
+
+def test_move_node_evidence_type_override_is_recorded_in_provenance(db_session):
+    """Stage 5: a caller (fusion) that knows *why* a node moved can say so,
+    instead of every edit being recorded as the generic default."""
+    block_id, graph = _seed_a_multiparcel_block(db_session, seed=91)
+    node_id = next(iter(graph.nodes))
+    n = graph.nodes[node_id]
+    affected_edges = {e.id for e in graph.edges.values() if node_id in (e.n0, e.n1)}
+
+    dx, dy = _safe_nudge(graph, node_id)
+    with ChangesetContext(db_session, block_id=block_id) as cs:
+        cs.move_node(node_id, n.x + dx, n.y + dy, evidence_type="fusion", detail={"sources": ("legacy", "gt")})
+
+    rows = db_session.query(Provenance).filter(Provenance.edge_id.in_(affected_edges)).all()
+    assert rows
+    for r in rows:
+        assert r.evidence_type == "fusion"
+        assert r.payload["sources"] == ["legacy", "gt"]  # JSON round-trips the tuple as a list
+    assert verify_chain(db_session) is True
+
+
+def test_an_edit_that_makes_two_unrelated_faces_overlap_is_refused(db_session):
+    """Regression, deterministic (no dependency on a synthetic seed
+    happening to be geometrically "unlucky"): a face's own polygon can
+    stay perfectly simple while still growing across a DIFFERENT face it
+    shares no node with -- the classic multi-face topology bug individual
+    per-face is_valid() checks can't catch. Three boxes: p1 and p2 share
+    an edge at x=2; p3 sits above both with a gap, touching neither."""
+    p1 = box(0, 0, 2, 2)
+    p2 = box(2, 0, 4, 2)
+    p3 = box(0, 2.5, 4, 4)
+    local_graph = build_graph([Geom(p1, CRS), Geom(p2, CRS), Geom(p3, CRS)], CRS)
+    node_id = next(nid for nid, n in local_graph.nodes.items() if (n.x, n.y) == (2.0, 2.0))
+
+    seed_block_graph(db_session, block_id=500, graph=local_graph, description="seed")
+    db_session.commit()
+    graph = load_block_graph(db_session, 500)
+    node_id = next(nid for nid, n in graph.nodes.items() if (n.x, n.y) == (2.0, 2.0))
+
+    with pytest.raises(ValueError, match="overlap"):
+        with ChangesetContext(db_session, block_id=500) as cs:
+            cs.move_node(node_id, 2.0, 3.2)  # pushes p1/p2's shared corner up into p3, which shares no node with it
+
+    # refused cleanly -- nothing written, session still usable
+    assert db_session.query(NodeVersion).filter_by(id=node_id).count() == 1  # only the seeded version-1 row
+    db_session.execute(select(NodeVersion).limit(1)).all()
+
+
+def test_apply_fusion_refuses_one_bad_move_without_blocking_the_rest(db_session):
+    """Same deterministic scenario as the test above, but through
+    apply_fusion(): one unsafe candidate must not hold a completely
+    unrelated, safe candidate hostage in the same block -- the whole
+    reason apply_fusion() persists each move in its own changeset rather
+    than one all-or-nothing transaction for the block (found by review:
+    see its docstring in store/changeset.py)."""
+    p1 = box(0, 0, 2, 2)
+    p2 = box(2, 0, 4, 2)
+    p3 = box(0, 2.5, 4, 4)
+    local_graph = build_graph([Geom(p1, CRS), Geom(p2, CRS), Geom(p3, CRS)], CRS)
+    seed_block_graph(db_session, block_id=501, graph=local_graph, description="seed")
+    db_session.commit()
+    graph = load_block_graph(db_session, 501)
+
+    bad_node = next(nid for nid, n in graph.nodes.items() if (n.x, n.y) == (2.0, 2.0))
+    safe_node = next(nid for nid, n in graph.nodes.items() if (n.x, n.y) == (0.0, 0.0))
+
+    fake_result = FuseBlockResult(
+        moved={
+            bad_node: FusedPosition(x=2.0, y=3.2, sigma=1.0, sources=("test",)),  # into p3 -- unsafe
+            safe_node: FusedPosition(x=0.01, y=0.01, sigma=1.0, sources=("test",)),  # tiny, safe nudge
+        },
+        conflicts=[],
+        unchanged=[],
+    )
+
+    result = apply_fusion(db_session, 501, fake_result)
+
+    assert result.applied == [safe_node]
+    assert len(result.topology_refused) == 1
+    assert result.topology_refused[0]["node_id"] == bad_node
+    assert "overlap" in result.topology_refused[0]["reason"]
+
+    final = load_block_graph(db_session, 501)
+    assert (final.nodes[safe_node].x, final.nodes[safe_node].y) == (0.01, 0.01)
+    assert (final.nodes[bad_node].x, final.nodes[bad_node].y) == (2.0, 2.0)  # left exactly alone
 
 
 class TestTwoBlocksAndDataIntegrity:
@@ -247,7 +388,8 @@ class TestConcurrency:
         cs2.__enter__()  # both load the same pre-edit snapshot
 
         a = baseline.nodes[node_a]
-        cs1.move_node(node_a, a.x + 1.0, a.y + 1.0)
+        dx, dy = _safe_nudge(baseline, node_a)
+        cs1.move_node(node_a, a.x + dx, a.y + dy)
         cs1.__exit__(None, None, None)  # succeeds
 
         b = baseline.nodes[node_b]
@@ -259,7 +401,7 @@ class TestConcurrency:
         s2.execute(select(NodeVersion).limit(1)).all()
 
         final = load_block_graph(s1, block_id)
-        assert (final.nodes[node_a].x, final.nodes[node_a].y) == (a.x + 1.0, a.y + 1.0)
+        assert (final.nodes[node_a].x, final.nodes[node_a].y) == (a.x + dx, a.y + dy)
         assert (final.nodes[node_b].x, final.nodes[node_b].y) == (b.x, b.y)  # s2's edit did not apply
 
     def test_concurrent_provenance_appends_are_serialized_not_forked(self, concurrent_sessions):

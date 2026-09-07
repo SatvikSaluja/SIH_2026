@@ -26,6 +26,7 @@ lost update on that face's cached geometry, no error at all).
 from __future__ import annotations
 
 from collections import defaultdict
+from dataclasses import dataclass
 
 from geoalchemy2.shape import from_shape, to_shape
 from shapely.geometry import Point
@@ -51,6 +52,9 @@ from geocadastra.store.schema import (
 class ConcurrentModificationError(RuntimeError):
     """Some part of this block changed in the store after this changeset
     loaded it and before it committed. Nothing was written."""
+
+
+_OVERLAP_TOL = 1e-4  # m^2 -- see _persist()'s cross-face overlap check
 
 
 def _allocate_ids(session: Session, seq, n: int) -> list[int]:
@@ -219,6 +223,7 @@ class ChangesetContext:
         self.description = description
         self.graph: PlanarGraph | None = None
         self._touched_nodes: set[int] = set()
+        self._node_evidence: dict[int, tuple[str, dict]] = {}
         self._changeset: Changeset | None = None
 
     def __enter__(self) -> "ChangesetContext":
@@ -228,9 +233,18 @@ class ChangesetContext:
         self.session.flush()  # assigns an id, without committing
         return self
 
-    def move_node(self, node_id: int, x: float, y: float) -> None:
+    def move_node(
+        self, node_id: int, x: float, y: float, evidence_type: str | None = None, detail: dict | None = None
+    ) -> None:
+        """`evidence_type`/`detail` override the default "manual_edit"
+        provenance recorded for edges touching this node (e.g. Stage 5's
+        fusion passes evidence_type="fusion" with which sources/
+        reliabilities produced the new position) -- so provenance says
+        *why* geometry moved, not just that it did."""
         self.graph.move_node(node_id, x, y)
         self._touched_nodes.add(node_id)
+        if evidence_type is not None:
+            self._node_evidence[node_id] = (evidence_type, detail or {})
 
     def __exit__(self, exc_type, exc, tb) -> bool:
         if exc_type is not None:
@@ -292,6 +306,28 @@ class ChangesetContext:
                     f"block {self.block_id}: this edit makes face {face_id} invalid "
                     f"({explain_validity(poly)}) -- refusing to persist"
                 )
+        # Individual validity (above) catches a face self-intersecting, but
+        # NOT two different faces overlapping each other -- a real failure
+        # mode this check alone missed: several nodes moved independently
+        # (e.g. a Stage 5 fusion pass touching many nodes in one changeset)
+        # can each keep their own face simple while pushing it across a
+        # face it doesn't even share a node with. Found via the Stage 5
+        # topology-invariant acceptance test, which is exactly the
+        # "classic bug" a multi-node edit is supposed to catch. `_OVERLAP_TOL`
+        # is a tiny absolute area (~1cm^2) -- far above GEOS float noise at
+        # this project's real (UTM) coordinate scale, far below any overlap
+        # from an actual crossed edge.
+        for face_id in touched_faces:
+            poly = new_polys[face_id].geom
+            for other_id, other in new_polys.items():
+                if other_id == face_id:
+                    continue
+                overlap = poly.intersection(other.geom).area
+                if overlap > _OVERLAP_TOL:
+                    raise ValueError(
+                        f"block {self.block_id}: this edit makes face {face_id} overlap face {other_id} "
+                        f"by {overlap:.4f} m^2 -- refusing to persist"
+                    )
 
         current_node_versions = {
             row.id: row.version for row in _latest_versions(self.session, NodeVersion, list(self._touched_nodes))
@@ -310,12 +346,20 @@ class ChangesetContext:
 
         for edge_id in affected_edges:
             edge_version = self.graph._loaded_versions.get(("edge", edge_id), 1)
+            edge = self.graph.edges[edge_id]
+            # an override on either endpoint node wins over the "manual_edit"
+            # default; if both endpoints were touched by different callers
+            # with different overrides (rare -- a fusion pass and a manual
+            # edit in the same changeset), the lower node id's override wins,
+            # deterministically, rather than depending on dict iteration order
+            override = self._node_evidence.get(min(edge.n0, edge.n1)) or self._node_evidence.get(max(edge.n0, edge.n1))
+            evidence_type, extra = override if override else ("manual_edit", {})
             append_provenance(
                 self.session,
                 edge_id=edge_id,
                 edge_version=edge_version,
-                evidence_type="manual_edit",
-                payload={"changeset_id": cs_id, "moved_nodes": sorted(self._touched_nodes)},
+                evidence_type=evidence_type,
+                payload={"changeset_id": cs_id, "moved_nodes": sorted(self._touched_nodes), **extra},
             )
 
         for face_id in touched_faces:
@@ -325,4 +369,54 @@ class ChangesetContext:
         return touched_faces
 
 
-__all__ = ["ChangesetContext", "ConcurrentModificationError", "load_block_graph", "seed_block_graph"]
+@dataclass(frozen=True)
+class FusionApplyResult:
+    applied: list  # node_id -- fused position was safe and is now persisted
+    conflicts: list  # ConflictRecord -- fusion's own source-vs-source disagreements, passed through unchanged
+    topology_refused: list  # dict{"node_id", "sources", "reason"} -- see apply_fusion()
+
+
+def apply_fusion(session: Session, block_id: int, fuse_result, author: str | None = None) -> FusionApplyResult:
+    """Apply a Stage 5 `fuse_block()` result's moves ONE AT A TIME, each in
+    its own changeset -- deliberately not one giant transaction for the
+    whole block's worth of moves.
+
+    Found by review (via the Stage 5 topology-invariant acceptance test):
+    a "nearest point on legacy/model evidence" estimate has no awareness
+    of nearby, unrelated faces, so some individual fused positions can be
+    topologically unsafe even alone -- independent of how far they moved
+    the node (a near-zero move can cross a nearby thin sliver; a large
+    move along open space can be perfectly safe). Bundling every node's
+    move into one all-or-nothing changeset meant a single unsafe candidate
+    silently blocked every OTHER, perfectly safe improvement in the same
+    block too -- the exact opposite of "where evidence is strong it
+    dominates." Applying independently means 31 good moves are not held
+    hostage by 21 bad ones in the same block.
+
+    A move `ChangesetContext` refuses (would break planarity) is not
+    silently dropped: it's recorded in `.topology_refused`, consistent
+    with "nothing is silently resolved" -- fused evidence that disagrees
+    with the *existing topology* too much to trust is conceptually the
+    same kind of event as two sources disagreeing with each other, just
+    caught procedurally rather than by comparing sigmas up front.
+    """
+    applied: list = []
+    topology_refused: list = []
+    for node_id, fused in fuse_result.moved.items():
+        try:
+            with ChangesetContext(session, block_id=block_id, author=author, description="fusion") as cs:
+                cs.move_node(node_id, fused.x, fused.y, evidence_type="fusion", detail={"sources": list(fused.sources)})
+            applied.append(node_id)
+        except ValueError as e:
+            topology_refused.append({"node_id": node_id, "sources": fused.sources, "reason": str(e)})
+    return FusionApplyResult(applied=applied, conflicts=list(fuse_result.conflicts), topology_refused=topology_refused)
+
+
+__all__ = [
+    "ChangesetContext",
+    "ConcurrentModificationError",
+    "FusionApplyResult",
+    "apply_fusion",
+    "load_block_graph",
+    "seed_block_graph",
+]
