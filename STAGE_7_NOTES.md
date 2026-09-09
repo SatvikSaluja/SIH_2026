@@ -1,5 +1,7 @@
 # Stage 7 — prioritisation and the headline metric
 
+> Update (8 September 2026): the subsequent whole-codebase fixes supersede affected behavior described below. See [REVIEW_FIXES_NOTES.md](REVIEW_FIXES_NOTES.md) for the corrected transaction, evidence, calibration, and evaluation contracts.
+
 ## Built
 `geocadastra/core/priority.py`: which parcels to send a field surveyor to
 first, and the certified-fraction-vs-surveyor-hours curve -- the doc's

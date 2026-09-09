@@ -14,7 +14,9 @@ the irregular and encroached parcels the product exists to handle").
 from __future__ import annotations
 
 import numpy as np
+from shapely.errors import GEOSException
 from shapely.geometry import Point
+from geocadastra.core.planarize import GRID
 
 from geocadastra.core.graph import PlanarGraph
 
@@ -31,17 +33,23 @@ def boundary_position_error(gt_points: list, graph: PlanarGraph) -> dict:
     and found perfect (error 0)", so this is never silently reported as
     a suspiciously-good zero.
     """
-    if not gt_points:
-        return {"p50": None, "p90": None, "n": 0}
+    return summarize_errors(boundary_position_residuals(gt_points, graph))
+
+
+def boundary_position_residuals(gt_points: list, graph: PlanarGraph) -> list[float]:
+    """Keep residuals available so callers can aggregate within strata."""
     edges = [graph.edge_linestring(eid) for eid in graph.edges]
     if not edges:
+        return []
+    return [min(edge.distance(Point((gt.x, gt.y) if hasattr(gt, "x") else gt))
+                for edge in edges) for gt in gt_points]
+
+
+def summarize_errors(errors: list[float]) -> dict:
+    if not errors:
         return {"p50": None, "p90": None, "n": 0}
-    errors = []
-    for gt in gt_points:
-        x, y = (gt.x, gt.y) if hasattr(gt, "x") else gt
-        errors.append(min(e.distance(Point(x, y)) for e in edges))
-    errors = np.array(errors)
-    return {"p50": float(np.percentile(errors, 50)), "p90": float(np.percentile(errors, 90)), "n": len(errors)}
+    return {"p50": float(np.percentile(errors, 50)),
+            "p90": float(np.percentile(errors, 90)), "n": len(errors)}
 
 
 def topology_validity_rate(graph: PlanarGraph) -> dict:
@@ -56,24 +64,39 @@ def topology_validity_rate(graph: PlanarGraph) -> dict:
     polys = graph.faces_to_polygons()
     n = len(polys)
     if n == 0:
-        return {"rate": None, "n_faces": 0, "n_invalid": 0, "n_overlapping_pairs": 0}
+        return {"rate": None, "n_faces": 0, "n_invalid": 0, "n_overlapping_pairs": 0, "n_unchecked_pairs": 0}
     items = list(polys.values())
     invalid_idx = {i for i, g in enumerate(items) if not g.geom.is_valid}
     overlapping_pairs = 0
     faces_in_an_overlap: set = set()
+    unchecked_pairs = 0
+    indeterminate_faces = set()
     for i in range(len(items)):
         for j in range(i + 1, len(items)):
-            if items[i].geom.intersects(items[j].geom) and items[i].geom.intersection(items[j].geom).area > 1e-6:
+            if i in invalid_idx or j in invalid_idx:
+                # An invalid face cannot be safely overlaid. Count the pair
+                # explicitly, without claiming its overlap is known.
+                unchecked_pairs += 1
+                if items[i].geom.envelope.intersects(items[j].geom.envelope):
+                    indeterminate_faces.update((i, j))
+                continue
+            try:
+                overlap = items[i].geom.intersection(items[j].geom, grid_size=GRID).area
+            except GEOSException:
+                unchecked_pairs += 1
+                indeterminate_faces.update((i, j))
+                continue
+            if overlap > 1e-6:
                 overlapping_pairs += 1
-                faces_in_an_overlap.add(i)
-                faces_in_an_overlap.add(j)
+                faces_in_an_overlap.update((i, j))
     invalid = len(invalid_idx)
-    n_bad = len(invalid_idx | faces_in_an_overlap)
+    n_bad = len(invalid_idx | faces_in_an_overlap | indeterminate_faces)
     return {
         "rate": (n - n_bad) / n,
         "n_faces": n,
         "n_invalid": invalid,
         "n_overlapping_pairs": overlapping_pairs,
+        "n_unchecked_pairs": unchecked_pairs,
     }
 
 

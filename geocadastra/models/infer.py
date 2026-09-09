@@ -59,6 +59,7 @@ def run_tiled_inference(
     road/building already sigmoid-ed to [0,1]), `landuse`
     ((n_landuse_classes, H, W), softmax-ed), and `evidence` (H, W)."""
     model.eval()
+    device = next(model.parameters()).device
     if ndsm.ndim == 2:
         ndsm = ndsm[None]
     _, h, w = rgb.shape
@@ -67,6 +68,7 @@ def run_tiled_inference(
 
     accum = {k: np.zeros((h, w), dtype=np.float64) for k in ("sdf", "log_var", "road", "building")}
     accum_landuse = np.zeros((n_landuse_classes, h, w), dtype=np.float64)
+    second_moment = np.zeros((h, w), dtype=np.float64)
     weight_sum = np.zeros((h, w), dtype=np.float64)
     window = _tile_window(tile_size)
 
@@ -77,20 +79,26 @@ def run_tiled_inference(
         for y in ys:
             for x in xs:
                 y1, x1 = y + tile_size, x + tile_size
-                rgb_tile = torch.from_numpy(rgb[:, y:y1, x:x1]).unsqueeze(0).float()
-                ndsm_tile = torch.from_numpy(ndsm[:, y:y1, x:x1]).unsqueeze(0).float()
+                rgb_tile = torch.from_numpy(rgb[:, y:y1, x:x1]).unsqueeze(0).float().to(device)
+                ndsm_tile = torch.from_numpy(ndsm[:, y:y1, x:x1]).unsqueeze(0).float().to(device)
                 out = model(rgb_tile, ndsm_tile)
                 win = window[: y1 - y, : x1 - x]
 
-                accum["sdf"][y:y1, x:x1] += out["sdf"][0, 0].numpy() * win
-                accum["log_var"][y:y1, x:x1] += out["log_var"][0, 0].numpy() * win
-                accum["road"][y:y1, x:x1] += torch.sigmoid(out["road"][0, 0]).numpy() * win
-                accum["building"][y:y1, x:x1] += torch.sigmoid(out["building"][0, 0]).numpy() * win
-                accum_landuse[:, y:y1, x:x1] += torch.softmax(out["landuse"][0], dim=0).numpy() * win[None]
+                accum["sdf"][y:y1, x:x1] += out["sdf"][0, 0].cpu().numpy() * win
+                # Moment-match the overlapping tile predictions: include
+                # both their effective variances and disagreement in means.
+                mu = out["sdf"][0, 0].cpu().numpy().astype(np.float64)
+                variance = torch.exp(out["log_var"][0, 0]).cpu().numpy()
+                second_moment[y:y1, x:x1] += (variance + mu * mu) * win
+                accum["road"][y:y1, x:x1] += torch.sigmoid(out["road"][0, 0]).cpu().numpy() * win
+                accum["building"][y:y1, x:x1] += torch.sigmoid(out["building"][0, 0]).cpu().numpy() * win
+                accum_landuse[:, y:y1, x:x1] += torch.softmax(out["landuse"][0], dim=0).cpu().numpy() * win[None]
                 weight_sum[y:y1, x:x1] += win
 
     weight_sum = np.clip(weight_sum, 1e-9, None)
     result = {k: (v / weight_sum).astype(np.float32) for k, v in accum.items()}
+    variance = np.maximum(second_moment / weight_sum - (accum["sdf"] / weight_sum)**2, np.finfo(np.float32).tiny)
+    result["log_var"] = np.log(variance).astype(np.float32)
     result["landuse"] = (accum_landuse / weight_sum[None]).astype(np.float32)
     result["evidence"] = sdf_to_evidence(result["sdf"])
     return result

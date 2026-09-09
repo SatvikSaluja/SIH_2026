@@ -1,0 +1,39 @@
+........................................................................ [ 17%]
+........................................................................ [ 35%]
+........................................................................ [ 52%]
+...............................................................x...x.... [ 70%]
+........................................................................ [ 87%]
+..................................................                       [100%]
+=============================== warnings summary ===============================
+.venv/lib/python3.12/site-packages/fastapi/testclient.py:1
+  /home/satvik/SIH_2026/.venv/lib/python3.12/site-packages/fastapi/testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient as TestClient  # noqa
+
+.venv/lib/python3.12/site-packages/starlette/testclient.py:53
+  /home/satvik/SIH_2026/.venv/lib/python3.12/site-packages/starlette/testclient.py:53: DeprecationWarning: The anyio.abc.BlockingPortal alias is deprecated, use anyio.from_thread.BlockingPortal instead.
+    _PortalFactoryType = Callable[[], AbstractContextManager[anyio.abc.BlockingPortal]]
+
+geocadastra/tests/test_api.py: 89 warnings
+geocadastra/tests/test_blocks.py: 6 warnings
+geocadastra/tests/test_changeset.py: 8 warnings
+geocadastra/tests/test_orchestrator.py: 72 warnings
+geocadastra/tests/test_parcel_contracts.py: 9 warnings
+geocadastra/tests/test_review_regressions.py: 25 warnings
+geocadastra/tests/test_stage1_roundtrip.py: 141 warnings
+geocadastra/tests/test_stage4_acceptance.py: 30 warnings
+geocadastra/tests/test_stage5_fusion_acceptance.py: 42 warnings
+geocadastra/tests/test_stage6_acceptance.py: 600 warnings
+geocadastra/tests/test_stage7_acceptance.py: 5 warnings
+geocadastra/tests/test_stage8_acceptance.py: 9 warnings
+geocadastra/tests/test_synth.py: 159 warnings
+geocadastra/tests/test_train.py: 18 warnings
+geocadastra/tests/test_training_resume.py: 5 warnings
+geocadastra/tests/test_transport.py: 62 warnings
+  /home/satvik/SIH_2026/.venv/lib/python3.12/site-packages/rasterio/transform.py:178: PendingDeprecationWarning: Use `@` matmul instead of `*` mul operator for matrix multiplication
+    return Affine.translation(west, north) * Affine.scale(xsize, -ysize)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+XFAIL geocadastra/tests/test_stage4_acceptance.py::test_sdf_zero_level_set_and_variance_separation_on_held_out_wards - Known, documented gap (see STAGE_4_NOTES.md): CPU-only training at this scale does not reliably meet the 1px median boundary error / invisible>visible variance targets. Not weakened or skipped -- reports actual numbers, re-run first once GPU training lands.
+XFAIL geocadastra/tests/test_stage5_fusion_acceptance.py::test_block_boundary_fusion_conserves_total_area_on_real_wards - Known, root-caused gap (see STAGE_5_NOTES.md): this project's synthetic generator's _recursive_split()/_strip_split() do not always exactly reproduce their own input polygon's boundary shape (confirmed: matching total area but up to ~19m of Hausdorff boundary deviation on a real block, including a near-zero-area but real-extent internal gap between two parcels that should be exactly adjacent) -- a Stage 0 GEOS-precision artifact, not a Stage 5 fusion defect. Projecting exterior nodes onto ward.blocks[i].polygon (the intended authoritative reference) is then projecting onto a boundary that isn't quite the same shape the rest of the (untouched) graph already assumes, which the total-area invariant is precise enough to detect even though no overlap or invalid face results (verified separately, see the safety test above). Fixing this needs Stage 0's recursive-split precision fixed, not a Stage 5 change -- not weakened or hidden, reports the real numbers on failure.
+408 passed, 2 xfailed, 1282 warnings in 1669.97s (0:27:49)

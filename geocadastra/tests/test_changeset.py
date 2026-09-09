@@ -200,7 +200,7 @@ def test_editing_a_node_records_provenance_for_every_affected_edge(db_session):
     with ChangesetContext(db_session, block_id=block_id) as cs:
         cs.move_node(node_id, n.x + dx, n.y + dy)
 
-    rows = db_session.query(Provenance).filter(Provenance.edge_id.in_(affected_edges)).all()
+    rows = db_session.query(Provenance).filter(Provenance.edge_id.in_(affected_edges), Provenance.evidence_type != "initial_load").all()
     assert {r.edge_id for r in rows} == affected_edges
     for r in rows:
         assert r.evidence_type == "manual_edit"
@@ -220,7 +220,7 @@ def test_move_node_evidence_type_override_is_recorded_in_provenance(db_session):
     with ChangesetContext(db_session, block_id=block_id) as cs:
         cs.move_node(node_id, n.x + dx, n.y + dy, evidence_type="fusion", detail={"sources": ("legacy", "gt")})
 
-    rows = db_session.query(Provenance).filter(Provenance.edge_id.in_(affected_edges)).all()
+    rows = db_session.query(Provenance).filter(Provenance.edge_id.in_(affected_edges), Provenance.evidence_type != "initial_load").all()
     assert rows
     for r in rows:
         assert r.evidence_type == "fusion"
@@ -401,7 +401,10 @@ class TestConcurrency:
         s2.execute(select(NodeVersion).limit(1)).all()
 
         final = load_block_graph(s1, block_id)
-        assert (final.nodes[node_a].x, final.nodes[node_a].y) == (a.x + dx, a.y + dy)
+        from shapely import set_precision
+        from shapely.geometry import Point
+        expected = set_precision(Point(a.x + dx, a.y + dy), 0.001)
+        assert (final.nodes[node_a].x, final.nodes[node_a].y) == (expected.x, expected.y)
         assert (final.nodes[node_b].x, final.nodes[node_b].y) == (b.x, b.y)  # s2's edit did not apply
 
     def test_apply_fusion_records_a_concurrent_modification_as_topology_refused_not_a_crash(

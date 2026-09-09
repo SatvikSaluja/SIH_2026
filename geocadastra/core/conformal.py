@@ -30,6 +30,11 @@ class CalibratedBands:
     alpha: float  # miscoverage rate this was calibrated for (nominal coverage = 1 - alpha)
 
 
+def _validate_sigma(sigma: float) -> None:
+    if not math.isfinite(sigma) or sigma <= 0:
+        raise ValueError("sigma must be finite and positive")
+
+
 def nonconformity_score(true_xy: tuple, pred_xy: tuple, sigma: float) -> float:
     """|true - predicted| / sigma -- a standardized residual. Dividing by
     the model's OWN predicted sigma is what makes scores comparable across
@@ -39,6 +44,7 @@ def nonconformity_score(true_xy: tuple, pred_xy: tuple, sigma: float) -> float:
     DEFAULT_SIGMA_LEGACY_BY_STYLE) -- comparing raw displacement across
     strata would just measure that noise difference, not miscalibration.
     """
+    _validate_sigma(sigma)
     dx, dy = true_xy[0] - pred_xy[0], true_xy[1] - pred_xy[1]
     return (dx**2 + dy**2) ** 0.5 / sigma
 
@@ -49,12 +55,9 @@ def calibrate(calibration_points, alpha: float = 0.1) -> CalibratedBands:
     Mondrian split conformal: a SEPARATE (1-alpha) quantile per stratum
     (doc: "stratified by settlement type... because coverage must hold
     within informal settlements specifically, not just on average").
-    Within each stratum, the quantile is the standard finite-sample-
-    correct choice -- the `ceil((n+1)*(1-alpha))`-th smallest score (not
-    a naive `numpy.quantile`, which under-covers for small n) -- clamped
-    to the largest available score when a stratum has too few points to
-    reach that far exactly, the maximally-conservative fallback rather
-    than fabricating a number past what the data supports.
+    Use the ceil((n+1)*(1-alpha))-th order statistic of the scores
+    augmented with infinity. Insufficient calibration data therefore
+    produces an unbounded band, never a falsely certified finite one.
     """
     if not 0.0 <= alpha < 1.0:
         raise ValueError(f"alpha must be in [0, 1), got {alpha}")
@@ -63,13 +66,15 @@ def calibrate(calibration_points, alpha: float = 0.1) -> CalibratedBands:
         raise ValueError("calibrate() needs at least one calibration point")
     by_stratum = defaultdict(list)
     for stratum, score in calibration_points:
+        if not math.isfinite(score) or score < 0:
+            raise ValueError("calibration scores must be finite and nonnegative")
         by_stratum[stratum].append(score)
     quantile_by_stratum = {}
     for stratum, scores in by_stratum.items():
         scores = sorted(scores)
         n = len(scores)
-        k = min(math.ceil((n + 1) * (1 - alpha)), n)
-        quantile_by_stratum[stratum] = scores[k - 1]
+        k = math.ceil((n + 1) * (1 - alpha))
+        quantile_by_stratum[stratum] = scores[k - 1] if k <= n else math.inf
     return CalibratedBands(quantile_by_stratum=quantile_by_stratum, alpha=alpha)
 
 
@@ -83,6 +88,7 @@ def certified_band(bands: CalibratedBands, stratum: str, sigma: float) -> float:
     silently resolved" applies here too: a certified band for a stratum
     this calibration never measured is not a real certification.
     """
+    _validate_sigma(sigma)
     return bands.quantile_by_stratum[stratum] * sigma
 
 

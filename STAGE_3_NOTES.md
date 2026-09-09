@@ -1,3 +1,5 @@
+Update (September 9): see [FOUNDATION_GAPS_NOTES.md](FOUNDATION_GAPS_NOTES.md) for parcel identity, interior rings, area guards, replay, and resumable training. Historical limitations below are superseded only where that note explicitly says so.
+
 # Stage 3 — capacity-constrained parcel assignment
 
 The differentiator. Built and tested against synthetic data + a simulated

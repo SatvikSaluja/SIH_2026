@@ -100,17 +100,27 @@ def test_full_ward_runs_end_to_end_through_the_api_resumes_and_is_reconstructibl
     assert all(b["status"] == "done" for b in status_body["blocks"]), status_body["blocks"]
     assert len(status_body["blocks"]) == n_blocks
 
-    # 5. the certified parcel layer is queryable through the API
+    # 5. Geometry is queryable; unresolved constraints are explicit and the
+    # API does not claim calibration merely because processing completed.
     ward_resp = client.get(f"/wards/{ward_job_id}/parcels", params={"minx": -1e6, "miny": -1e6, "maxx": 1e6, "maxy": 1e6})
     parcels = ward_resp.json()["parcels"]
     assert len(parcels) > 0
+    assert all("parcel_id" in p for p in parcels)
+    readiness = client.get(f"/wards/{ward_job_id}/constraints").json()
+    assert readiness["boundary_certification"] == "not_calibrated"
+    assert len(readiness["blocks"]) == n_blocks
 
     # 6. the whole run is reconstructible from the changeset log -- every
     # block's graph, replayed fresh from its own changeset history, matches
     # the live faces exactly
     for block in status_body["blocks"]:
-        replayed = load_block_graph(committed_session, block["block_id"])
+        from geocadastra.store.replay import replay_block_graph
+        from geoalchemy2.shape import to_shape
+        replayed = replay_block_graph(committed_session, block["block_id"])
         live_face_ids = {
             f.id for f in committed_session.execute(select(Face).where(Face.block_id == block["block_id"])).scalars()
         }
         assert set(replayed.faces.keys()) == live_face_ids
+        for fid in live_face_ids:
+            assert replayed.face_polygon(fid).equals_exact(to_shape(committed_session.get(Face,fid).geom),0)
+            assert replayed.face_parcel_ids.get(fid) == committed_session.get(Face,fid).recorded_parcel_id

@@ -1,41 +1,12 @@
-"""Orchestration (Stage 8): Celery tasks, one per block, idempotent and
-resumable -- a job that dies mid-ward resumes without redoing completed
-blocks, per the Stage 8 Done-when.
+"""Synthetic ward orchestration: one atomic, resumable transaction per block.
 
-Each block is processed independently and atomically: parcel assignment
-(Stage 3) -> seed the block's planar graph (Stage 1/2) -> fuse against
-legacy/GT evidence (Stage 5) -> persist. `BlockJob.status` is the
-resumability primitive -- `process_block` checks it first and is a no-op
-if already `done`; `run_ward` (or a resumed call to it) only dispatches
-blocks that aren't. A mid-block crash can't leave a half-seeded graph:
-every write happens inside Stage 2's own transactional
-`seed_block_graph()`/`apply_fusion()`, and `process_block`'s own outer
-try/except marks the block `failed` (not `done`) on any exception, so a
-retry re-attempts the whole block rather than resuming partway through
-it -- a real, if slightly coarser than block-internal, resumability unit.
-
-A Celery task's arguments must be picklable and, in a real deployment,
-sent across a message queue to a separate worker process -- so `process_
-block` takes a plain `db_url`/`schema` (to build its own DB session, not
-a live `Session` object) and a `ward_source` string, not a Python object.
-The block's own true geometry, recorded areas, legacy records, and GT
-points were all durably ingested (see `api/main.py`'s ingest endpoint)
-and are read back from the DB, exactly the state a resume needs. Only the
-raster EVIDENCE FIELD (Stage 4's model output) is not read from storage:
-this project has no real drone imagery or raster store yet ("Real drone
-data does not exist yet in this repo... everything must work on
-synthetic first" -- the doc's own words), so `_regenerate_ward()`
-deterministically re-derives the same synthetic ward `generate_ward()`
-produced at ingest time and calls `simulate_evidence_field()` on it --
-the exact same stand-in every other stage's acceptance tests already use
-in place of a real trained Stage 4 model. A real deployment would read a
-stored raster tile by block id instead; this is an explicit, acknowledged
-simplification, not a silently different code path production would take
-too.
+Workers regenerate only simulated raster evidence; vector facts come from
+storage. Completion means geometry processing completed, not certification.
 """
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import os
 
 from celery import Celery
@@ -45,13 +16,15 @@ from shapely.ops import unary_union
 from sqlalchemy import create_engine, select, text
 from sqlalchemy.orm import Session, sessionmaker
 
-from geocadastra.core.crs import Geom
+from geocadastra.core.crs import CRSMismatchError, Geom
 from geocadastra.core.fusion import DEFAULT_SIGMA_LEGACY_BY_STYLE, fuse_block
 from geocadastra.core.transport import assign_parcels, parcels_to_graph
-from geocadastra.store.changeset import allocate_ids, apply_fusion, load_block_graph, seed_block_graph
+from geocadastra.store.changeset import allocate_ids, apply_fusion, load_block_graph, lock_block, seed_block_graph
+from geocadastra.store.constraints import parcel_area_report
 from geocadastra.store.schema import (
     SRID,
     BlockJob,
+    Face,
     IngestedBlock,
     LegacyRecord,
     PersistedConflict,
@@ -136,6 +109,8 @@ def ingest_synthetic_ward(session: Session, ward, seed: int) -> WardJob:
     always inside its own polygon, unlike an arbitrary point that could
     fall in a neighbour's -- correctness over unnecessary noise here.
     """
+    if ward.crs != f"EPSG:{SRID}":
+        raise CRSMismatchError(f"store requires EPSG:{SRID}, got {ward.crs}")
     ward_job = WardJob(
         source=f"synthetic:seed={seed}", params=dataclasses.asdict(ward.params), status="pending", crs=ward.crs
     )
@@ -171,14 +146,18 @@ def ingest_synthetic_ward(session: Session, ward, seed: int) -> WardJob:
         session.add(
             LegacyRecord(
                 id=legacy_id_map[lp.id], ward_job_id=ward_job.id, block_id=block_id_map[source_parcel.block_id],
-                geom=from_shape(lp.polygon, srid=SRID),
+                geom=from_shape(lp.polygon, srid=SRID), original_geom=from_shape(lp.polygon, srid=SRID),
             )
         )
+    # Decide roles before fitting, independently of the residual or settlement.
+    session.flush()  # recorded parcels must exist before their survey FK rows
     for gt in ward.gt_points:
+        key = f"{seed}:{gt.x:.6f}:{gt.y:.6f}".encode()
+        held_out = int.from_bytes(hashlib.sha256(key).digest()[:4], "big") % 5 == 0
         session.add(
             SurveyPoint(
                 ward_job_id=ward_job.id, parcel_id=parcel_id_map[gt.parcel_id], geom=from_shape(Point(gt.x, gt.y), srid=SRID),
-                source="synthetic_gt",
+                source="synthetic_gt", purpose="evaluation" if held_out else "fusion",
             )
         )
     session.commit()
@@ -202,38 +181,26 @@ def _regenerate_ward(source: str, params: dict):
 
 @app.task(bind=True, max_retries=3, default_retry_delay=5)
 def process_block(self, db_url: str, schema: str, ward_job_id: int, block_id: int, ward_source: str, ward_params: dict) -> str:
-    """Process one block end to end. Returns `"already done"`, `"done"`,
-    or raises (after recording the block `failed`).
+    """Publish one complete block atomically; serialize duplicate deliveries.
 
-    Two genuinely concurrent calls for the SAME block (a real risk in a
-    multi-worker deployment -- e.g. a task redelivered after its worker
-    was thought dead but wasn't) both racing past the "already done"
-    check would both run the full, non-idempotent seed/fuse pipeline,
-    producing two duplicate copies of the block's graph (found by
-    review, reproduced directly: `seed_block_graph()` has no check for
-    "does this block already have faces" and no uniqueness constraint
-    stops it). A session-scoped advisory lock keyed on `(ward_job_id,
-    block_id)`, held for this call's whole duration and explicitly
-    released in `finally`, serializes that: a second concurrent call
-    blocks here until the first finishes, then sees `status == "done"`
-    and returns cleanly instead of racing it. Session-scoped (`pg_
-    advisory_lock`/`_unlock`), not the transaction-scoped `_xact_lock`
-    `store/provenance.py` uses elsewhere in this project -- this
-    function's own pipeline already commits multiple times internally
-    (one changeset per fused node, by design, so one unsafe move can't
-    block every other safe one in the same block), which would release
-    an xact-scoped lock at the FIRST of those commits, not at the end.
+    Each fusion candidate uses a savepoint. A refused candidate cannot undo
+    the seed or other safe candidates, while a crash rolls back the entire
+    attempt. The transaction-scoped lock cannot be returned to the pool.
     """
     session = make_session(db_url, schema)
-    session.execute(text("SELECT pg_advisory_lock(:a, :b)"), {"a": ward_job_id, "b": block_id})
     try:
+        lock_block(session, block_id)
         job = session.get(BlockJob, (ward_job_id, block_id))
         if job is not None and job.status == "done":
             return "already done"
 
         ward_job = session.get(WardJob, ward_job_id)
+        if ward_job is None:
+            raise ValueError(f"no ward {ward_job_id}")
         crs = ward_job.crs
         block_row = session.get(IngestedBlock, (ward_job_id, block_id))
+        if block_row is None:
+            raise ValueError(f"block {block_id} does not belong to ward {ward_job_id}")
         block_geom = Geom(to_shape(block_row.geom), crs)
 
         recorded = (
@@ -254,7 +221,7 @@ def process_block(self, db_url: str, schema: str, ward_job_id: int, block_id: in
         )
         parcel_ids = [r.id for r in recorded]
         gt_rows = (
-            session.execute(select(SurveyPoint).where(SurveyPoint.ward_job_id == ward_job_id, SurveyPoint.parcel_id.in_(parcel_ids)))
+            session.execute(select(SurveyPoint).where(SurveyPoint.ward_job_id == ward_job_id, SurveyPoint.parcel_id.in_(parcel_ids), SurveyPoint.purpose == "fusion"))
             .scalars()
             .all()
             if parcel_ids
@@ -280,8 +247,21 @@ def process_block(self, db_url: str, schema: str, ward_job_id: int, block_id: in
         result = assign_parcels(block_geom, parcel_areas, seed_points, evidence_field, transform, n_segments=n_segments)
         parcel_polygons = {recorded[i].id: poly for i, poly in result.parcel_polygons.items()}
 
-        fresh_graph = parcels_to_graph(parcel_polygons, block_geom)
-        seed_block_graph(session, block_id, fresh_graph, author="orchestrator", description="ingest: parcel assignment")
+        # Also recover stores containing a partial graph from an older worker:
+        # retain its IDs/history and re-run fusion; never seed on top of it.
+        if session.scalar(select(Face.id).where(Face.block_id == block_id).limit(1)) is None:
+            fresh_graph = parcels_to_graph(parcel_polygons, block_geom)
+            seed = seed_block_graph(session, block_id, fresh_graph, author="orchestrator", description="ingest: parcel assignment",
+                evidence={"method": "capacity_constrained_transport", "ward_job_id": ward_job_id,
+                          "recorded_parcel_ids": parcel_ids, "source": ward_source, "n_segments": n_segments,
+                          "assignment_conflicts": [dataclasses.asdict(c) for c in result.conflicts]})
+            for conflict in fresh_graph.identity_conflicts:
+                session.add(PersistedConflict(
+                    ward_job_id=ward_job_id, block_id=block_id, node_id=-1,
+                    kind="parcel_identity_unresolved", detail={**conflict, "face_id": seed.affected_entities["source_face_ids"][str(conflict["face_id"])], "changeset_id": seed.id},
+                    sources=["assignment", "polygonization"], disagreement_m=None,
+                    geom=from_shape(fresh_graph.face_polygon(conflict["face_id"]), srid=SRID),
+                ))
         # seed_block_graph() remaps `fresh_graph`'s own local 0..n-1 node/edge/face
         # ids onto new globally-unique ids pulled from the store's sequences before
         # writing (Stage 2's own documented id-collision fix) -- so `fresh_graph`'s
@@ -293,7 +273,7 @@ def process_block(self, db_url: str, schema: str, ward_job_id: int, block_id: in
         # fusion move, since the store's node 0 is a different corner entirely).
         graph = load_block_graph(session, block_id)
 
-        legacy_boundary = unary_union([to_shape(r.geom) for r in legacy]) if legacy else None
+        legacy_boundary = unary_union([to_shape(r.geom).boundary for r in legacy]) if legacy else None
         # fuse_block()/gt_estimate() want plain (x, y) points -- fusion is a
         # pure nearest-neighbour spatial search, not parcel-scoped (a GT point
         # near a shared corner should inform that corner regardless of which
@@ -315,8 +295,22 @@ def process_block(self, db_url: str, schema: str, ward_job_id: int, block_id: in
             graph, list(graph.nodes), style=style, legacy_boundary=legacy_boundary, gt_points=gt_points,
             block_boundary=block_geom, sigma_legacy_by_style=sigma_legacy_by_style,
         )
-        apply_result = apply_fusion(session, block_id, fuse_result, author="orchestrator")
+        apply_result = apply_fusion(session, block_id, fuse_result, author="orchestrator", commit=False)
 
+        for c in result.conflicts:
+            session.add(PersistedConflict(
+                ward_job_id=ward_job_id, block_id=block_id, node_id=-1,
+                kind=c.kind, detail=c.detail, sources=["recorded_area", "assignment"],
+                disagreement_m=None, geom=from_shape(block_geom.geom, srid=SRID),
+            ))
+        for refusal in apply_result.topology_refused:
+            node = graph.nodes[refusal["node_id"]]
+            session.add(PersistedConflict(
+                ward_job_id=ward_job_id, block_id=block_id, node_id=node.id,
+                kind="topology_refused", detail={"reason": refusal["reason"]},
+                sources=list(refusal["sources"]), disagreement_m=None,
+                geom=from_shape(Point(node.x, node.y), srid=SRID),
+            ))
         for c in apply_result.conflicts:
             session.add(
                 PersistedConflict(
@@ -329,6 +323,26 @@ def process_block(self, db_url: str, schema: str, ward_job_id: int, block_id: in
                 )
             )
 
+        final_graph = load_block_graph(session, block_id)
+        area_report = parcel_area_report(session, block_id, final_graph)
+        for row in area_report["parcels"]:
+            if not row["within_tolerance"]:
+                session.add(PersistedConflict(
+                    ward_job_id=ward_job_id, block_id=block_id, node_id=-1,
+                    kind="final_recorded_area_mismatch", detail=row,
+                    sources=["recorded_area", "final_geometry"], disagreement_m=None,
+                    geom=from_shape(block_geom.geom, srid=SRID),
+                ))
+        coverage_error = area_report["block_coverage_error_m2"]
+        if coverage_error is None or coverage_error > area_report["block_coverage_tolerance_m2"]:
+            session.add(PersistedConflict(
+                ward_job_id=ward_job_id, block_id=block_id, node_id=-1,
+                kind="block_coverage_mismatch",
+                detail={"error_m2": coverage_error, "tolerance_m2": area_report["block_coverage_tolerance_m2"]},
+                sources=["block_boundary", "final_geometry"], disagreement_m=None,
+                geom=from_shape(block_geom.geom, srid=SRID),
+            ))
+
         if job is None:
             job = BlockJob(ward_job_id=ward_job_id, block_id=block_id)
             session.add(job)
@@ -338,7 +352,14 @@ def process_block(self, db_url: str, schema: str, ward_job_id: int, block_id: in
         return "done"
     except Exception as e:
         session.rollback()
-        job = session.get(BlockJob, (ward_job_id, block_id))
+        lock_block(session, block_id)
+        # A different delivery may have completed after our rollback released
+        # the lock. Never replace that successful status with our stale error.
+        job = session.get(BlockJob, (ward_job_id, block_id), populate_existing=True)
+        if job is not None and job.status == "done":
+            raise
+        if session.get(IngestedBlock, (ward_job_id, block_id)) is None:
+            raise
         if job is None:
             job = BlockJob(ward_job_id=ward_job_id, block_id=block_id)
             session.add(job)
@@ -347,15 +368,31 @@ def process_block(self, db_url: str, schema: str, ward_job_id: int, block_id: in
         session.commit()
         raise
     finally:
-        try:
-            session.execute(text("SELECT pg_advisory_unlock(:a, :b)"), {"a": ward_job_id, "b": block_id})
-            session.commit()  # the unlock call itself opens a new implicit transaction after the prior rollback/commit
-        except Exception:
-            pass  # the connection is already broken -- Postgres releases session-scoped advisory
-            # locks automatically when the backend connection itself closes, so this isn't a
-            # permanent leak, just a delayed release; never mask whatever exception is already
-            # propagating (or a clean return) over a failure to unlock promptly
         session.close()
+
+
+def ward_status(session: Session, ward_job_id: int) -> tuple[str, list]:
+    """Derive progress from every expected block, including undispatched rows."""
+    ward = session.get(WardJob, ward_job_id)
+    if ward is None:
+        raise ValueError(f"no ward {ward_job_id}")
+    rows = session.execute(
+        select(IngestedBlock.block_id, BlockJob.status, BlockJob.error)
+        .outerjoin(BlockJob, (BlockJob.ward_job_id == IngestedBlock.ward_job_id) &
+                   (BlockJob.block_id == IngestedBlock.block_id))
+        .where(IngestedBlock.ward_job_id == ward_job_id).order_by(IngestedBlock.block_id)
+    ).all()
+    blocks = [{"block_id": bid, "status": state or "pending", "error": error} for bid, state, error in rows]
+    states = {b["status"] for b in blocks}
+    if states <= {"done"}:
+        state = "done"
+    elif "failed" in states:
+        state = "failed"
+    elif ward.status == "pending" and states <= {"pending"}:
+        state = "pending"
+    else:
+        state = "running"
+    return state, blocks
 
 
 def run_ward(session: Session, db_url: str, schema: str, ward_job_id: int) -> dict:
@@ -390,24 +427,7 @@ def run_ward(session: Session, db_url: str, schema: str, ward_job_id: int) -> di
     for block_id in to_dispatch:
         process_block.delay(db_url, schema, ward_job_id, block_id, ward_job.source, ward_job.params)
 
-    # re-query which blocks are ACTUALLY done now, rather than trusting the
-    # pre-dispatch `done_block_ids`/`to_dispatch` sets: in eager mode the loop
-    # above already ran every dispatched task synchronously, so this reflects
-    # the real post-run state; in real async dispatch, a freshly-dispatched
-    # block that hasn't executed yet has NO `BlockJob` row at all, so it's
-    # correctly absent from this query too -- an earlier version here computed
-    # "remaining" as `WHERE status != 'done'`, which only matches EXISTING
-    # rows and so silently missed exactly that case (found by review,
-    # reproduced: it made a fresh ward's `/run` report `status: "done"`
-    # immediately after dispatch, before a single block had actually run, in
-    # any real -- non-eager -- deployment).
-    done_now = {
-        bj.block_id
-        for bj in session.execute(
-            select(BlockJob).where(BlockJob.ward_job_id == ward_job_id, BlockJob.status == "done")
-        ).scalars()
-    }
-    ward_job.status = "done" if set(all_block_ids) <= done_now else "running"
+    ward_job.status, _ = ward_status(session, ward_job_id)
     session.commit()
 
     return {"total": len(all_block_ids), "already_done": len(done_block_ids), "dispatched": to_dispatch}

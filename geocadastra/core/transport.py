@@ -471,13 +471,9 @@ def parcels_to_graph(parcel_polygons: dict, block: Geom, grid: float = GRID) -> 
     same pattern as Stage 1's blocks.py, so it can't be dragged off its
     recorded position by a nearby parcel vertex.
 
-    Can raise NotImplementedError (from build_graph's hole guard) if the
-    leftover/reservoir mechanism in assign_parcels produced an "island"
-    parcel fully enclosed by one neighbor -- full multi-ring face support is
-    a real feature, not a one-line fix, and is out of Stage 3's scope (see
-    Stage 1's own documented limitation); this re-raises with the parcel ids
-    involved named, rather than build_graph's generic message, so the cause
-    is diagnosable instead of just "some face has a hole."
+    Preserve source parcel identity for each derived face. Ambiguous or
+    uncovered faces remain explicitly unassigned; never pick a nearest seed
+    or arbitrary largest overlap as a legal record association.
     """
     block_polygon, crs = block.geom, block.crs
     linework = []
@@ -497,11 +493,17 @@ def parcels_to_graph(parcel_polygons: dict, block: Geom, grid: float = GRID) -> 
     faces = planarize(linework, grid=grid, fixed=fixed)
     ward_buffered = block_polygon.buffer(grid)
     inside = [f for f in faces if f.geom.area > grid * grid and ward_buffered.contains(f.geom.representative_point())]
-    try:
-        return build_graph(inside, crs, collinear_tol=grid)
-    except NotImplementedError as e:
-        raise NotImplementedError(
-            f"{e} -- likely an 'island' parcel fully enclosed by one neighbor, probably from the "
-            "leftover/reservoir mechanism in assign_parcels() scattering an uncapacitated parcel's "
-            "superpixels; full multi-ring face support does not exist yet (see STAGE_1_NOTES.md)"
-        ) from e
+    graph = build_graph(inside, crs, collinear_tol=grid)
+    # Match actual area coverage, allowing only a precision-grid boundary
+    # strip. A face can be one component of a disconnected recorded parcel.
+    for fid, face in graph.faces_to_polygons().items():
+        tolerance = max(grid * grid, face.geom.length * grid)
+        overlaps = {pid: face.geom.intersection(source.geom, grid_size=grid).area
+                    for pid, source in parcel_polygons.items()}
+        candidates = [pid for pid, area in overlaps.items() if area > tolerance]
+        if len(candidates) == 1 and face.area - overlaps[candidates[0]] <= tolerance:
+            graph.face_parcel_ids[fid] = candidates[0]
+        else:
+            graph.identity_conflicts.append({"face_id": fid, "candidate_parcel_ids": candidates,
+                                             "reason": "ambiguous_or_uncovered_face"})
+    return graph

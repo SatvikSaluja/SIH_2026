@@ -1,5 +1,7 @@
 # Stage 6 — conformal calibration
 
+> Update (8 September 2026): the subsequent whole-codebase fixes supersede affected behavior described below. See [REVIEW_FIXES_NOTES.md](REVIEW_FIXES_NOTES.md) for the corrected transaction, evidence, calibration, and evaluation contracts.
+
 ## Built
 `geocadastra/core/conformal.py`: split conformal prediction over Stage 5's
 fused position estimates, stratified (Mondrian) by settlement style so

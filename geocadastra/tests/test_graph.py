@@ -172,10 +172,11 @@ def test_collinear_tol_controls_whether_a_realistically_jittered_point_dissolves
     assert len(tight.nodes) == 5  # kept: tol smaller than the jitter, so it's a "real" corner
 
 
-def test_a_face_with_a_hole_fails_loudly_instead_of_silently_wrong():
+def test_a_face_with_a_hole_preserves_its_interior_ring():
     donut = Polygon([(0, 0), (10, 0), (10, 10), (0, 10)], holes=[[(4, 4), (6, 4), (6, 6), (4, 6)]])
-    with pytest.raises(NotImplementedError):
-        build_graph([Geom(donut, "EPSG:32643")], "EPSG:32643")
+    graph = build_graph([Geom(donut, "EPSG:32643")], "EPSG:32643")
+    assert graph.face_polygon(0).equals(donut)
+    assert len(graph.faces[0].holes) == 1
 
 
 def test_degree_two_points_are_dissolved_into_one_multi_vertex_edge():

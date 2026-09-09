@@ -64,7 +64,7 @@ def db_session(db_engine):
 # handles regardless (CASCADE covers FK order) -- one list shared by both
 # fixtures below so a Stage 8 table added to schema.py only needs adding here
 _ALL_TABLES = (
-    "provenance", "conflicts", "survey_points", "legacy_records", "recorded_parcels",
+    "coregistrations", "provenance", "conflicts", "survey_points", "legacy_records", "recorded_parcels",
     "ingested_blocks", "block_jobs", "ward_jobs", "face_boundaries", "faces", "edges", "nodes", "changesets",
 )
 

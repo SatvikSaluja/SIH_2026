@@ -55,11 +55,10 @@ def test_calibrate_is_mondrian_separate_quantile_per_stratum():
     assert bands.quantile_by_stratum["informal"] == pytest.approx(20.0)
 
 
-def test_calibrate_with_a_single_calibration_point_uses_it_as_the_quantile():
-    """Degenerate but sane: too little data to do anything but be maximally
-    conservative (use the one point available)."""
+def test_calibrate_with_one_point_cannot_certify_a_finite_90_percent_band():
+    """The requested rank is n+1, whose augmented score is infinity."""
     bands = calibrate([("formal", 7.0)], alpha=0.1)
-    assert bands.quantile_by_stratum["formal"] == pytest.approx(7.0)
+    assert math.isinf(bands.quantile_by_stratum["formal"])
 
 
 def test_calibrate_rejects_an_empty_calibration_set():

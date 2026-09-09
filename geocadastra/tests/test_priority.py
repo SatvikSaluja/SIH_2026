@@ -78,9 +78,9 @@ def test_face_uncertainty_takes_the_worst_boundary_edge_not_the_average():
     assert result[0] == pytest.approx(9.0)
 
 
-def test_face_uncertainty_is_zero_for_a_face_with_no_measured_edges():
+def test_face_uncertainty_is_unbounded_for_a_face_with_no_measured_edges():
     graph = _two_square_graph()
-    assert face_uncertainty(graph, {}) == {0: 0.0, 1: 0.0}
+    assert face_uncertainty(graph, {}) == {0: float("inf"), 1: float("inf")}
 
 
 def test_priority_score_ranks_a_hub_above_an_equally_uncertain_isolated_parcel():
@@ -182,11 +182,8 @@ def test_simulate_survey_of_an_empty_ward_returns_no_curve():
     assert simulate_survey([], {}, {}, {}, {}, (0, 0), 1.0, cost_model) == []
 
 
-def test_simulate_survey_treats_an_unmeasured_edge_as_zero_not_a_crash():
-    """Same rule face_uncertainty() applies: an edge with no certified band
-    yet contributes nothing, rather than KeyError-ing -- found by review:
-    edge_uncertainty[eid] (no .get()) crashed on any face with an edge
-    missing from edge_uncertainty, even before the survey loop started."""
+def test_simulate_survey_requires_work_for_an_unmeasured_edge():
+    """An unavailable band remains uncertified until surveyed."""
     cost_model = CostModel(minutes_per_parcel=5.0, travel_speed_m_per_min=100.0)
     curve = simulate_survey(
         order=[[1]],
@@ -198,7 +195,9 @@ def test_simulate_survey_treats_an_unmeasured_edge_as_zero_not_a_crash():
         tolerance=1.0,
         cost_model=cost_model,
     )
-    assert curve[0].certified_fraction == pytest.approx(1.0)  # unmeasured -> treated as 0.0 -> already certified
+    assert curve[0].certified_fraction == 0.0
+    assert curve[-1].certified_fraction == 1.0
+    assert curve[-1].hours == pytest.approx(5/60)
 
 
 def test_simulate_survey_prices_travel_sequentially_within_a_multi_member_group():

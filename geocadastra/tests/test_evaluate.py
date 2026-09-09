@@ -65,7 +65,7 @@ def test_topology_validity_rate_with_no_faces_returns_none_not_zero():
     from geocadastra.core.graph import PlanarGraph
 
     result = topology_validity_rate(PlanarGraph(crs=CRS))
-    assert result == {"rate": None, "n_faces": 0, "n_invalid": 0, "n_overlapping_pairs": 0}
+    assert result == {"rate": None, "n_faces": 0, "n_invalid": 0, "n_overlapping_pairs": 0, "n_unchecked_pairs": 0}
 
 
 def test_topology_validity_rate_detects_a_real_overlap():

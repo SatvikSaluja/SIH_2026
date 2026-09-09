@@ -194,7 +194,11 @@ def test_a_block_with_conflicting_evidence_persists_conflict_records(committed_s
     valid_block_ids = set(_global_block_ids(committed_session, job.id, ward))
     for c in conflicts:
         assert c.block_id in valid_block_ids
-        assert len(c.sources) >= 2
+        assert c.sources
+        if c.kind == "source_disagreement":
+            assert len(c.sources) >= 2
+        else:
+            assert c.detail
 
 
 def test_two_wards_ingested_into_the_same_store_dont_collide(committed_session):

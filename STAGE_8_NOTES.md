@@ -1,4 +1,8 @@
+Update (September 9): see [FOUNDATION_GAPS_NOTES.md](FOUNDATION_GAPS_NOTES.md) for parcel identity, interior rings, area guards, replay, and resumable training. Historical limitations below are superseded only where that note explicitly says so.
+
 # Stage 8 — orchestration and API
+
+> Update (8 September 2026): the subsequent whole-codebase fixes supersede affected behavior described below. See [REVIEW_FIXES_NOTES.md](REVIEW_FIXES_NOTES.md) for the corrected transaction, evidence, calibration, and evaluation contracts.
 
 ## Built
 `geocadastra/store/schema.py` additions: `WardJob` (one end-to-end run;

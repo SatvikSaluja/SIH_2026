@@ -17,7 +17,7 @@ from __future__ import annotations
 import datetime as dt
 
 from geoalchemy2 import Geometry
-from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Integer, Sequence, String, Text, func
+from sqlalchemy import BigInteger, Boolean, CheckConstraint, DateTime, ForeignKey, ForeignKeyConstraint, Integer, Sequence, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -97,6 +97,7 @@ class Face(Base):
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     block_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    recorded_parcel_id: Mapped[int | None] = mapped_column(ForeignKey("recorded_parcels.id"), index=True)
     geom: Mapped[object] = mapped_column(Geometry(geometry_type="POLYGON", srid=SRID))  # GiST index: geoalchemy2's own default
     computed_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     source_changeset_id: Mapped[int] = mapped_column(ForeignKey("changesets.id"))
@@ -108,6 +109,7 @@ class FaceBoundary(Base):
     __tablename__ = "face_boundaries"
 
     face_id: Mapped[int] = mapped_column(ForeignKey("faces.id"), primary_key=True)
+    ring: Mapped[int] = mapped_column(Integer, primary_key=True, default=0, server_default="0")
     position: Mapped[int] = mapped_column(Integer, primary_key=True)  # order within the ring walk
     edge_id: Mapped[int] = mapped_column(BigInteger, index=True)  # stable edge id (not version-pinned)
     forward: Mapped[bool] = mapped_column(Boolean)  # True: traverse edge n0->n1; False: n1->n0
@@ -145,6 +147,7 @@ class WardJob(Base):
     # this ward's own legacy-evidence sigma, not be silently treated as
     # perfectly registered. NULL until co-registration actually runs.
     coreg_residual_m: Mapped[float | None] = mapped_column()
+    coreg_transform: Mapped[list | None] = mapped_column(JSONB)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -195,6 +198,7 @@ class RecordedParcel(Base):
     where the model or legacy layer thinks its boundary sits."""
 
     __tablename__ = "recorded_parcels"
+    __table_args__ = (UniqueConstraint("ward_job_id", "id", name="uq_recorded_parcel_ward_id"),)
 
     # caller-supplied, not server-generated -- MUST come from recorded_parcel_id_seq
     # (see ingest_synthetic_ward()), never the synthetic generator's own ward-local
@@ -205,6 +209,7 @@ class RecordedParcel(Base):
     ward_job_id: Mapped[int] = mapped_column(ForeignKey("ward_jobs.id"), index=True)
     block_id: Mapped[int] = mapped_column(BigInteger, index=True)
     area: Mapped[float] = mapped_column()
+    area_tolerance_m2: Mapped[float] = mapped_column(default=0.01, server_default="0.01")
     style: Mapped[str] = mapped_column(String)
     seed_point: Mapped[object] = mapped_column(Geometry(geometry_type="POINT", srid=SRID))
 
@@ -222,6 +227,7 @@ class LegacyRecord(Base):
     ward_job_id: Mapped[int] = mapped_column(ForeignKey("ward_jobs.id"), index=True)
     block_id: Mapped[int] = mapped_column(BigInteger, index=True)
     geom: Mapped[object] = mapped_column(Geometry(geometry_type="GEOMETRY", srid=SRID))  # Polygon or MultiPolygon
+    original_geom: Mapped[object | None] = mapped_column(Geometry(geometry_type="GEOMETRY", srid=SRID))
 
 
 class SurveyPoint(Base):
@@ -237,12 +243,17 @@ class SurveyPoint(Base):
     """
 
     __tablename__ = "survey_points"
+    __table_args__ = (
+        ForeignKeyConstraint(["ward_job_id", "parcel_id"], ["recorded_parcels.ward_job_id", "recorded_parcels.id"], name="fk_survey_parcel_ward"),
+        CheckConstraint("purpose IN ('fusion', 'calibration', 'evaluation')", name="ck_survey_purpose"),
+    )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     ward_job_id: Mapped[int] = mapped_column(ForeignKey("ward_jobs.id"), index=True)
     parcel_id: Mapped[int] = mapped_column(BigInteger, index=True)
     geom: Mapped[object] = mapped_column(Geometry(geometry_type="POINT", srid=SRID))
     source: Mapped[str] = mapped_column(String)
+    purpose: Mapped[str] = mapped_column(String, default="fusion", server_default="fusion", index=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -261,8 +272,22 @@ class PersistedConflict(Base):
     block_id: Mapped[int] = mapped_column(BigInteger, index=True)
     node_id: Mapped[int] = mapped_column(BigInteger, index=True)
     sources: Mapped[list] = mapped_column(JSONB)
-    disagreement_m: Mapped[float] = mapped_column()
+    disagreement_m: Mapped[float | None] = mapped_column()
+    kind: Mapped[str] = mapped_column(String, default="source_disagreement", server_default="source_disagreement")
+    detail: Mapped[dict] = mapped_column(JSONB, default=dict, server_default="{}")
     geom: Mapped[object] = mapped_column(Geometry(geometry_type="GEOMETRY", srid=SRID))
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class Coregistration(Base):
+    """Append-only alignment evidence, including the original control points."""
+    __tablename__ = "coregistrations"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    ward_job_id: Mapped[int] = mapped_column(ForeignKey("ward_jobs.id"), index=True)
+    changeset_id: Mapped[int] = mapped_column(ForeignKey("changesets.id"))
+    transform: Mapped[list] = mapped_column(JSONB)
+    control_points: Mapped[list] = mapped_column(JSONB)
+    residual_m: Mapped[float] = mapped_column()
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

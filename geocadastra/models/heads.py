@@ -32,7 +32,7 @@ class SDFHead(nn.Module):
 
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         out = self.net(x)
-        return out[:, 0:1], out[:, 1:2]
+        return out[:, 0:1], 10.0 * torch.tanh(out[:, 1:2] / 10.0)
 
 
 class RoadHead(nn.Module):
@@ -88,14 +88,9 @@ def sdf_nll_loss(sdf_pred: torch.Tensor, log_var: torch.Tensor, sdf_true: torch.
     boundaries: claiming high uncertainty there is the cheapest way to
     reduce loss on a target the image gives it no real way to predict.
     """
-    # a hard clamp() gives EXACTLY zero gradient past its bounds (confirmed by
-    # review with a direct autograd check) -- a pixel whose log_var races to
-    # the clamp early in training (e.g. an easy match on an invisible-
-    # boundary-adjacent pixel by chance) then has its calibration frozen for
-    # the rest of training, regardless of how wrong later predictions are.
-    # A soft (tanh) bound keeps exp() just as stable but never has literally
-    # zero gradient, so a miscalibrated pixel can still be corrected.
-    log_var = 10.0 * torch.tanh(log_var / 10.0)
+    # log_var is the effective, bounded value returned by SDFHead.
+    # Applying the parameterization here again would train a different
+    # variance from the one used by direct or tiled inference.
     precision = torch.exp(-log_var)
     per_pixel = 0.5 * precision * (sdf_pred - sdf_true) ** 2 + 0.5 * log_var
     if mask is not None:

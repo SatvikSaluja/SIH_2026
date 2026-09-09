@@ -18,22 +18,27 @@ that looks like "this ward has no data yet".
 """
 from __future__ import annotations
 
+from geocadastra.store.constraints import parcel_area_report
+
 import os
 
 from fastapi import Depends, FastAPI, HTTPException, Response
 from geoalchemy2.shape import from_shape, to_shape
 from pydantic import BaseModel, Field
+from shapely.affinity import affine_transform
 from shapely.geometry import Point, box
 from sqlalchemy import create_engine, select, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from geocadastra.core.crs import Geom
-from geocadastra.core.evaluate import boundary_position_error, parcel_count_error, topology_validity_rate
-from geocadastra.jobs.orchestrator import ingest_synthetic_ward, run_ward
-from geocadastra.store.changeset import ChangesetContext, ConcurrentModificationError, load_block_graph
+from geocadastra.core.evaluate import boundary_position_residuals, summarize_errors, parcel_count_error, topology_validity_rate
+from geocadastra.jobs.orchestrator import ingest_synthetic_ward, run_ward, ward_status
+from geocadastra.store.changeset import ChangesetContext, ConcurrentModificationError, load_block_graph, lock_block
 from geocadastra.store.schema import (
     SRID,
     BlockJob,
+    Changeset,
+    Coregistration,
     Face,
     IngestedBlock,
     LegacyRecord,
@@ -156,9 +161,33 @@ def coregister(ward_job_id: int, req: CoRegisterRequest, session: Session = Depe
         transform, residual = _fit_affine(req.control_points)
     except ValueError as e:
         raise HTTPException(422, str(e)) from e
-    session.execute(
-        text("UPDATE ward_jobs SET coreg_residual_m = :r WHERE id = :id"), {"r": residual, "id": ward_job_id}
-    )
+    # All workers/editors use the same block locks. Lock in a stable order
+    # before changing the evidence they read; repeat registrations always
+    # transform the original upload, never the already transformed geometry.
+    block_ids = session.scalars(select(IngestedBlock.block_id).where(
+        IngestedBlock.ward_job_id == ward_job_id).order_by(IngestedBlock.block_id)).all()
+    for block_id in block_ids:
+        lock_block(session, block_id)
+    job = session.get(WardJob, ward_job_id, populate_existing=True)
+    records = session.scalars(select(LegacyRecord).where(LegacyRecord.ward_job_id == ward_job_id)
+                              .execution_options(populate_existing=True)).all()
+    a, b, c = transform[0]
+    d, e, f = transform[1]
+    cs = Changeset(description="co-registration", affected_entities={"legacy_records": [r.id for r in records]})
+    session.add(cs)
+    session.flush()
+    for record in records:
+        if record.original_geom is None:
+            record.original_geom = record.geom
+        record.geom = from_shape(affine_transform(to_shape(record.original_geom), [a, b, d, e, c, f]), srid=SRID)
+    job.coreg_transform = transform
+    job.coreg_residual_m = residual
+    session.add(Coregistration(ward_job_id=ward_job_id, changeset_id=cs.id, transform=transform,
+                              control_points=[list(p) for p in req.control_points], residual_m=residual))
+    for block_job in session.scalars(select(BlockJob).where(BlockJob.ward_job_id == ward_job_id)):
+        block_job.status = "pending"
+        block_job.error = None
+    job.status = "pending"
     session.commit()
     return {"transform": transform, "residual_m": residual}
 
@@ -183,15 +212,19 @@ def _fit_affine(control_points: list) -> tuple[list, float]:
     import numpy as np
 
     pts = np.asarray(control_points, dtype=float)
+    if not np.isfinite(pts).all():
+        raise ValueError("control points must be finite")
     src, dst = pts[:, :2], pts[:, 2:]
     A = np.column_stack([src[:, 0], src[:, 1], np.ones(len(src))])
     if np.linalg.matrix_rank(A) < 3:
         raise ValueError("control points are degenerate (duplicate or collinear) -- can't determine a unique affine fit")
     coeffs_x, *_ = np.linalg.lstsq(A, dst[:, 0], rcond=None)
     coeffs_y, *_ = np.linalg.lstsq(A, dst[:, 1], rcond=None)
+    if np.linalg.matrix_rank(np.stack([coeffs_x[:2], coeffs_y[:2]])) < 2:
+        raise ValueError("control points imply a collapsed affine transform")
     pred = np.column_stack([A @ coeffs_x, A @ coeffs_y])
     residual = float(np.sqrt(np.mean(np.sum((pred - dst) ** 2, axis=1))))
-    return [list(coeffs_x), list(coeffs_y)], residual
+    return [coeffs_x.tolist(), coeffs_y.tolist()], residual
 
 
 # ------------------------------------------------------- job submission --
@@ -210,12 +243,8 @@ def run(ward_job_id: int, session: Session = Depends(get_session), db_config: tu
 @app.get("/wards/{ward_job_id}/status")
 def status(ward_job_id: int, session: Session = Depends(get_session)):
     job = _get_ward_job_or_404(session, ward_job_id)
-    blocks = session.execute(select(BlockJob).where(BlockJob.ward_job_id == ward_job_id)).scalars().all()
-    return {
-        "ward_job_id": job.id,
-        "status": job.status,
-        "blocks": [{"block_id": b.block_id, "status": b.status, "error": b.error} for b in blocks],
-    }
+    state, blocks = ward_status(session, ward_job_id)
+    return {"ward_job_id": job.id, "status": state, "blocks": blocks}
 
 
 # --------------------------------------------------------- parcel query --
@@ -237,7 +266,7 @@ def parcels(ward_job_id: int, minx: float, miny: float, maxx: float, maxy: float
     ).scalars().all()
     return {
         "parcels": [
-            {"face_id": f.id, "block_id": f.block_id, "geometry": to_shape(f.geom).__geo_interface__} for f in rows
+            {"face_id": f.id, "block_id": f.block_id, "parcel_id": f.recorded_parcel_id, "geometry": to_shape(f.geom).__geo_interface__} for f in rows
         ]
     }
 
@@ -253,7 +282,8 @@ def conflicts(ward_job_id: int, session: Session = Depends(get_session)):
         "conflicts": [
             {
                 "id": c.id, "block_id": c.block_id, "node_id": c.node_id, "sources": c.sources,
-                "disagreement_m": c.disagreement_m, "geometry": to_shape(c.geom).__geo_interface__,
+                "disagreement_m": c.disagreement_m, "kind": c.kind, "detail": c.detail,
+                "geometry": to_shape(c.geom).__geo_interface__,
             }
             for c in rows
         ]
@@ -271,9 +301,30 @@ class EditRequest(BaseModel):
     author: str | None = None
 
 
+class ParcelAssociationsRequest(BaseModel):
+    block_id: int
+    assignments: dict[int, int]  # complete face_id -> recorded_parcel_id mapping
+    author: str | None = None
+
+
+@app.post("/wards/{ward_job_id}/parcel-associations")
+def parcel_associations(ward_job_id: int, req: ParcelAssociationsRequest, session: Session = Depends(get_session)):
+    _get_ward_job_or_404(session, ward_job_id)
+    if session.get(IngestedBlock, (ward_job_id, req.block_id)) is None:
+        raise HTTPException(404, "block does not belong to ward")
+    try:
+        with ChangesetContext(session, req.block_id, author=req.author, description="resolve parcel identity") as cs:
+            cs.associate_faces(req.assignments)
+    except ConcurrentModificationError as e:
+        raise HTTPException(409, str(e)) from e
+    except ValueError as e:
+        raise HTTPException(422, str(e)) from e
+    return parcel_area_report(session, req.block_id, load_block_graph(session, req.block_id))
+
+
 def _apply_move(
     session: Session, ward_job_id: int, block_id: int, node_id: int, x: float, y: float, author, description,
-    evidence_type,
+    evidence_type, *, survey_point: SurveyPoint | None = None,
 ):
     """Shared by `/edit` and `/field-verification`: apply one node move
     through a real changeset, translating its failure modes into the
@@ -299,7 +350,16 @@ def _apply_move(
         raise HTTPException(404, f"block {block_id} does not belong to ward {ward_job_id}")
     try:
         with ChangesetContext(session, block_id=block_id, author=author, description=description) as cs:
-            cs.move_node(node_id, x, y, evidence_type=evidence_type)
+            if survey_point is not None:
+                incident_faces = {fid for eid, edge in cs.graph.edges.items()
+                                  if node_id in (edge.n0, edge.n1)
+                                  for fid in cs.graph.faces_of_edge(eid)}
+                if not any(cs.graph.face_parcel_ids.get(fid) == survey_point.parcel_id for fid in incident_faces):
+                    raise ValueError("node is not incident to the specified recorded parcel")
+            cs.move_node(node_id, x, y, evidence_type=evidence_type,
+                         detail={"parcel_id": survey_point.parcel_id} if survey_point is not None else None)
+            if survey_point is not None:
+                session.add(survey_point)
     except ConcurrentModificationError as e:
         raise HTTPException(409, str(e)) from e
     except (ValueError, KeyError) as e:
@@ -341,17 +401,17 @@ def field_verification(ward_job_id: int, req: FieldVerificationRequest, session:
     original one, without a special case.
     """
     _get_ward_job_or_404(session, ward_job_id)
+    parcel = session.get(RecordedParcel, req.parcel_id)
+    if parcel is None or parcel.ward_job_id != ward_job_id or parcel.block_id != req.block_id:
+        raise HTTPException(422, "parcel does not belong to this ward and block")
+    measurement = SurveyPoint(
+        ward_job_id=ward_job_id, parcel_id=req.parcel_id, geom=from_shape(Point(req.x, req.y), srid=SRID),
+        source="field_verification", purpose="fusion",
+    )
     _apply_move(
         session, ward_job_id, req.block_id, req.node_id, req.x, req.y, req.author, "field verification",
-        "field_verification"
+        "field_verification", survey_point=measurement,
     )
-    session.add(
-        SurveyPoint(
-            ward_job_id=ward_job_id, parcel_id=req.parcel_id, geom=from_shape(Point(req.x, req.y), srid=SRID),
-            source="field_verification",
-        )
-    )
-    session.commit()
     return {"status": "applied"}
 
 
@@ -425,15 +485,9 @@ def analytics(ward_job_id: int, session: Session = Depends(get_session)):
     segmentation) -- `core/evaluate.py`'s own functions, one call per
     stratum here, never one pooling call.
 
-    `area_error_distribution()` (also in `core/evaluate.py`) is NOT
-    called here yet: it needs a per-parcel prediction paired with its own
-    recorded area, but `seed_block_graph()` remaps every face onto a
-    fresh globally-unique id pulled from the store's own sequence (Stage
-    2's documented id-collision fix) with no traceability kept back to
-    which original `RecordedParcel` it came from. Reporting it here
-    honestly needs that link persisted at seed time first (a real,
-    scoped addition, not attempted without being asked) -- deferred and
-    tracked in STAGE_8_NOTES.md, not silently faked with a wrong pairing.
+    Area errors are paired by durable recorded parcel ID, summing all
+    components of each parcel. Missing geometry counts as zero area and is
+    separately identified; unassigned faces are never guessed into a stratum.
     """
     _get_ward_job_or_404(session, ward_job_id)
     recorded = session.execute(select(RecordedParcel).where(RecordedParcel.ward_job_id == ward_job_id)).scalars().all()
@@ -445,35 +499,58 @@ def analytics(ward_job_id: int, session: Session = Depends(get_session)):
         style_recorded = [r for r in recorded if r.style == style]
         style_blocks = {r.block_id for r in style_recorded}
 
-        boundary_err, validity, n_faces_total, n_gt_total = [], [], 0, 0
+        residuals, fit_residuals, validity, n_faces_total = [], [], [], 0
+        area_rows = []
         for block_id in style_blocks:
-            faces = session.execute(select(Face).where(Face.block_id == block_id)).scalars().all()
-            if not faces:
-                continue
             graph = load_block_graph(session, block_id)
+            report = parcel_area_report(session, block_id, graph)
+            area_rows.extend(r for r in report["parcels"] if r["style"] == style)
+            if not graph.faces:
+                continue
+            style_face_ids = {fid for fid, pid in graph.face_parcel_ids.items()
+                              if pid in {r.id for r in style_recorded}}
             # GT points scoped to THIS block's own parcels, not the whole style --
             # a GT point from a different block of the same style is physically
             # nowhere near this block's edges, and would inflate its boundary
             # error with a meaningless large "nearest edge" distance
             block_parcel_ids = {r.id for r in style_recorded if r.block_id == block_id}
-            gt_rows = session.execute(select(SurveyPoint).where(SurveyPoint.parcel_id.in_(block_parcel_ids))).scalars().all()
-            block_gt = [(to_shape(g.geom).x, to_shape(g.geom).y) for g in gt_rows]
-            n_gt_total += len(block_gt)
-
-            boundary_err.append(boundary_position_error(block_gt, graph))
+            gt_rows = session.execute(select(SurveyPoint).where(SurveyPoint.ward_job_id == ward_job_id, SurveyPoint.parcel_id.in_(block_parcel_ids))).scalars().all()
+            held_out = [(to_shape(g.geom).x, to_shape(g.geom).y) for g in gt_rows if g.purpose == "evaluation"]
+            controls = [(to_shape(g.geom).x, to_shape(g.geom).y) for g in gt_rows if g.purpose == "fusion"]
+            residuals.extend(boundary_position_residuals(held_out, graph))
+            fit_residuals.extend(boundary_position_residuals(controls, graph))
             v = topology_validity_rate(graph)
             validity.append(v)
-            n_faces_total += v["n_faces"] or 0
+            n_faces_total += len(style_face_ids)
 
-        p50s = [b["p50"] for b in boundary_err if b["p50"] is not None]
+        error = summarize_errors(residuals)
         result[style] = {
-            "boundary_position_error_p50": sum(p50s) / len(p50s) if p50s else None,
+            "boundary_position_error_p50": error["p50"],
+            "boundary_position_error_p90": error["p90"],
+            "evaluation_population": "held_out",
+            "fusion_control_residual": summarize_errors(fit_residuals),
             "topology_validity_rate": (
-                sum(v["rate"] * (v["n_faces"] or 0) for v in validity if v["rate"] is not None) / n_faces_total
-                if n_faces_total
+                sum(v["rate"] * (v["n_faces"] or 0) for v in validity if v["rate"] is not None) / sum(v["n_faces"] for v in validity)
+                if sum(v["n_faces"] for v in validity)
                 else None
             ),
-            "parcel_count": parcel_count_error(n_faces_total, len(style_recorded)),
-            "n_gt_points": n_gt_total,
+            "parcel_count": parcel_count_error(len({r["parcel_id"] for r in area_rows if r["face_ids"]}), len(style_recorded)),
+            "face_count": n_faces_total,
+            "topology_scope": "blocks_containing_stratum",
+            "area_error_relative": summarize_errors([abs(r["error_m2"]) / r["recorded_area_m2"] for r in area_rows if r["recorded_area_m2"] > 0]),
+            "area_constraints": {"within_tolerance": sum(r["within_tolerance"] for r in area_rows),
+                                 "total": len(area_rows),
+                                 "missing_parcel_ids": [r["parcel_id"] for r in area_rows if not r["face_ids"]]},
+            "n_gt_points": error["n"],
         }
     return result
+
+
+@app.get("/wards/{ward_job_id}/constraints")
+def constraints(ward_job_id: int, session: Session = Depends(get_session)):
+    """Live identity/area readiness. This endpoint never certifies boundaries."""
+    _get_ward_job_or_404(session, ward_job_id)
+    blocks = session.scalars(select(IngestedBlock.block_id).where(IngestedBlock.ward_job_id == ward_job_id)).all()
+    reports = [{"block_id": bid, **parcel_area_report(session, bid, load_block_graph(session, bid))} for bid in blocks]
+    return {"recorded_area_constraints_satisfied": bool(reports) and all(r["constraints_satisfied"] for r in reports),
+            "boundary_certification": "not_calibrated", "blocks": reports}

@@ -28,6 +28,7 @@ build the two baseline sequences the real order must beat.
 """
 from __future__ import annotations
 
+import math
 from collections import defaultdict
 from dataclasses import dataclass
 
@@ -65,6 +66,13 @@ def build_parcel_adjacency(graph: PlanarGraph) -> dict[int, set[int]]:
     return adjacency
 
 
+def _band(values: dict, key: int) -> float:
+    value = values.get(key, math.inf)
+    if math.isnan(value) or value < 0:
+        raise ValueError("uncertainty must be nonnegative (infinity means unknown)")
+    return value
+
+
 def face_uncertainty(graph: PlanarGraph, edge_uncertainty: dict[int, float]) -> dict[int, float]:
     """Per-face uncertainty = the worst (max) of its own boundary edges'
     uncertainty. A parcel is not certified until every one of its edges is
@@ -72,15 +80,12 @@ def face_uncertainty(graph: PlanarGraph, edge_uncertainty: dict[int, float]) -> 
     hide its worst edge behind its better ones -- max is the only
     aggregation consistent with "the parcel's own certified status".
 
-    An edge absent from `edge_uncertainty` (no certified band computed for
-    it yet) contributes nothing: "not measured" is not the same claim as
-    "measured and uncertain", so a face bordered only by such edges gets
-    0.0, not a fabricated high or low number.
+    Missing bands are unbounded: a face requires every edge to be measured.
     """
     result = {}
     for fid, face in graph.faces.items():
-        bands = [edge_uncertainty[eid] for eid, _ in face.boundary if eid in edge_uncertainty]
-        result[fid] = max(bands) if bands else 0.0
+        bands = [_band(edge_uncertainty, eid) for eid, _ in face.all_edges]
+        result[fid] = max(bands, default=math.inf)
     return result
 
 
@@ -99,7 +104,8 @@ def priority_score(adjacency: dict[int, set[int]], uncertainty: dict[int, float]
     to *which* neighbours a parcel anchors, per the doc's own phrasing.
     """
     return {
-        fid: uncertainty.get(fid, 0.0) * (1.0 + sum(uncertainty.get(n, 0.0) for n in neighbours))
+        fid: (0.0 if _band(uncertainty, fid) == 0 else
+              _band(uncertainty, fid) * (1.0 + sum(_band(uncertainty, n) for n in neighbours)))
         for fid, neighbours in adjacency.items()
     }
 
@@ -182,7 +188,7 @@ def face_edge_ids(graph: PlanarGraph) -> dict:
     (Stage 1's own invariant: a shared boundary is one object, not two
     independent per-parcel copies) a neighbouring parcel also depends on.
     """
-    return {fid: tuple(eid for eid, _ in face.boundary) for fid, face in graph.faces.items()}
+    return {fid: tuple(eid for eid, _ in face.all_edges) for fid, face in graph.faces.items()}
 
 
 def face_centroids(graph: PlanarGraph) -> dict:
@@ -231,7 +237,7 @@ def build_priority_order(
     worth of these into one ward-wide priority order.
     """
     scores = priority_score(adjacency, uncertainty)
-    candidates = [pid for pid, u in uncertainty.items() if u > tolerance]
+    candidates = [pid for pid in adjacency if _band(uncertainty, pid) > tolerance]
     clusters = cluster_parcels(candidates, centroids, cluster_distance)
     # visit each cluster's own highest-scoring (most neighbour-anchoring)
     # parcels first: `cluster_parcels()`'s grouping order is arbitrary
@@ -303,17 +309,17 @@ def simulate_survey(
     a caller's own dict (e.g. one reused to simulate a second `order`)
     is left untouched.
     """
+    if not math.isfinite(tolerance) or tolerance < 0:
+        raise ValueError("tolerance must be finite and nonnegative")
     total = len(face_edges)
     if total == 0:
         return []
     edge_uncertainty = dict(edge_uncertainty)
 
     def current_uncertainty(fid: int) -> float:
-        # an edge absent from edge_uncertainty (no certified band yet) contributes
-        # nothing, same "not measured" != "measured and uncertain" rule
-        # face_uncertainty() applies -- not a KeyError, not a fabricated number
+        # Every boundary requires a measured band before certification.
         edges = face_edges.get(fid, ())
-        return max((edge_uncertainty.get(eid, 0.0) for eid in edges), default=0.0)
+        return max((_band(edge_uncertainty, eid) for eid in edges), default=math.inf)
 
     certified = {fid for fid in face_edges if current_uncertainty(fid) <= tolerance}
     curve = [SurveyPoint(hours=0.0, certified_fraction=len(certified) / total)]

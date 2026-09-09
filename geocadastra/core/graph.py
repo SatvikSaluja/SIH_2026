@@ -18,7 +18,10 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass
 
-from shapely.geometry import LineString, Polygon
+import math
+from shapely import set_precision
+from shapely.geometry import LineString, Point, Polygon
+from geocadastra.core.planarize import GRID
 
 from geocadastra.core.crs import CRSMismatchError, Geom
 
@@ -46,6 +49,15 @@ class Edge:
 class Face:
     id: int
     boundary: tuple  # ordered ((edge_id, forward), ...); forward means traverse n0->n1
+    holes: tuple = ()  # ordered edge walks for interior rings
+
+    @property
+    def rings(self) -> tuple:
+        return (self.boundary, *self.holes)
+
+    @property
+    def all_edges(self) -> tuple:
+        return tuple(entry for ring in self.rings for entry in ring)
 
 
 class PlanarGraph:
@@ -54,6 +66,8 @@ class PlanarGraph:
         self.nodes: dict[int, Node] = {}
         self.edges: dict[int, Edge] = {}
         self.faces: dict[int, Face] = {}
+        self.face_parcel_ids: dict[int, int] = {}
+        self.identity_conflicts: list[dict] = []
         self._edge_faces: dict[int, list[int]] = {}
         self._next_node = 0
         self._next_edge = 0
@@ -78,6 +92,13 @@ class PlanarGraph:
     def move_node(self, node_id: int, x: float, y: float) -> None:
         if node_id not in self.nodes:
             raise KeyError(f"move_node(): no node {node_id!r} in this graph")
+        if not math.isfinite(x) or not math.isfinite(y):
+            raise ValueError("node coordinates must be finite")
+        point = set_precision(Point(x, y), GRID)
+        x, y = point.x, point.y
+        for other_id, node in self.nodes.items():
+            if other_id != node_id and set_precision(Point(node.x, node.y), GRID).equals(point):
+                raise ValueError(f"move would merge node {node_id} with node {other_id} on the precision grid")
         old_key = _round_pt((self.nodes[node_id].x, self.nodes[node_id].y))
         if self._point_to_node.get(old_key) == node_id:
             del self._point_to_node[old_key]
@@ -95,18 +116,21 @@ class PlanarGraph:
     def face_polygon(self, face_id: int, _coords_cache: dict | None = None) -> Polygon:
         face = self.faces[face_id]
         cache = {} if _coords_cache is None else _coords_cache
-        ring: list = []
-        for edge_id, forward in face.boundary:
-            coords = cache.get(edge_id)
-            if coords is None:
-                coords = self._edge_coords(edge_id)
-                cache[edge_id] = coords
-            if not forward:
-                coords = coords[::-1]
-            if ring and ring[-1] == coords[0]:
-                coords = coords[1:]
-            ring.extend(coords)
-        return Polygon(ring)
+        rings = []
+        for walk in face.rings:
+            ring: list = []
+            for edge_id, forward in walk:
+                coords = cache.get(edge_id)
+                if coords is None:
+                    coords = self._edge_coords(edge_id)
+                    cache[edge_id] = coords
+                if not forward:
+                    coords = coords[::-1]
+                if ring and ring[-1] == coords[0]:
+                    coords = coords[1:]
+                ring.extend(coords)
+            rings.append(ring)
+        return Polygon(rings[0], rings[1:])
 
     def faces_to_polygons(self) -> dict[int, Geom]:
         # share one edge-coordinate cache across every face this call derives:
@@ -169,36 +193,28 @@ def build_graph(face_geoms: list[Geom], crs: str, collinear_tol: float = 1e-6) -
     for g in face_geoms:
         if g.crs != crs:
             raise CRSMismatchError(f"build_graph() got a face in {g.crs!r}, expected {crs!r}")
-        if g.geom.interiors:
-            # not a Stage 0 case (no synthetic parcel/block is ever donut-shaped) but
-            # silently using only .exterior below would build a graph whose faces
-            # claim the hole's area -- fail loudly instead of getting it quietly wrong
-            raise NotImplementedError(
-                f"build_graph() got a face with {len(g.geom.interiors)} interior ring(s) "
-                "(a hole) -- interior rings aren't represented in this graph model yet"
-            )
 
     rings = []
     seen_rings: set = set()
     for i, g in enumerate(face_geoms):
-        coords = [_round_pt(c) for c in g.geom.exterior.coords]
-        if coords[0] != coords[-1]:
-            coords.append(coords[0])
+        face_rings = [[_round_pt(c) for c in ring.coords]
+                      for ring in (g.geom.exterior, *g.geom.interiors)]
         # a duplicate face (same ring, e.g. a caller accidentally including a
         # block/parcel twice) would double-count area and confuse every
         # face-side/edge-sharing invariant below -- catch it here, not later.
         # Keyed on the ring's undirected edge set (not just its vertex set)
         # so it's rotation/direction-invariant without false-colliding on a
         # different shape that happens to share the same vertices.
-        ring_key = frozenset(_undirected_key(a, b) for a, b in zip(coords[:-1], coords[1:]))
+        ring_key = frozenset(frozenset(_undirected_key(a, b) for a, b in zip(coords[:-1], coords[1:]))
+                             for coords in face_rings)
         if ring_key in seen_rings:
             raise ValueError(f"build_graph() got the same face polygon more than once (index {i})")
         seen_rings.add(ring_key)
-        rings.append(coords)
+        rings.extend((i, coords) for coords in face_rings)
 
     # undirected segment key -> the face indices whose ring walks it
     segment_faces: dict[tuple, list[int]] = defaultdict(list)
-    for fi, ring in enumerate(rings):
+    for fi, ring in rings:
         for a, b in zip(ring[:-1], ring[1:]):
             if a == b:
                 continue
@@ -257,7 +273,8 @@ def build_graph(face_geoms: list[Geom], crs: str, collinear_tol: float = 1e-6) -
     # never wraps across the ring's arbitrary start point), then collapse
     # consecutive raw segments that belong to the same edge into one entry.
     edge_faces: dict[int, list[int]] = defaultdict(list)
-    for fi, ring in enumerate(rings):
+    face_walks = defaultdict(list)
+    for fi, ring in rings:
         open_ring = ring[:-1]
         start_idx = next((i for i, p in enumerate(open_ring) if p in node_points), 0)
         rotated = open_ring[start_idx:] + open_ring[:start_idx]
@@ -274,7 +291,10 @@ def build_graph(face_geoms: list[Geom], crs: str, collinear_tol: float = 1e-6) -
                 boundary.append(entry)
                 edge_faces[eid].append(fi)
                 last = entry
-        graph.faces[fi] = Face(fi, tuple(boundary))
+        face_walks[fi].append(tuple(boundary))
+
+    for fi, walks in face_walks.items():
+        graph.faces[fi] = Face(fi, walks[0], tuple(walks[1:]))
 
     graph._edge_faces = dict(edge_faces)
     return graph

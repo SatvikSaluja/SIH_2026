@@ -171,7 +171,9 @@ def test_field_verification_persists_a_survey_point_and_applies_the_move(client,
     block_id = _global_block_ids(committed_session, job.id, ward)[0]
     graph = load_block_graph(committed_session, block_id)
     node_id, node = next(iter(graph.nodes.items()))
-    parcel_id = ward.parcels[0].id
+    from geocadastra.store.schema import RecordedParcel
+    incident = {fid for eid, e in graph.edges.items() if node_id in (e.n0, e.n1) for fid in graph.faces_of_edge(eid)}
+    parcel_id = next(graph.face_parcel_ids[fid] for fid in incident if fid in graph.face_parcel_ids)
 
     resp = client.post(
         f"/wards/{job.id}/field-verification",

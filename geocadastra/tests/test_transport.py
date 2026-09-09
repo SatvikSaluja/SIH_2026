@@ -277,17 +277,15 @@ def test_recorded_area_not_matched_does_not_fire_within_tolerance():
     assert conflicts == []
 
 
-def test_parcels_to_graph_wraps_the_hole_error_with_actionable_context():
-    """Direct unit test of the improved error message: build_graph()'s
-    generic NotImplementedError is re-raised naming what likely caused it,
-    not left as a bare "some face has a hole"."""
+def test_parcels_to_graph_supports_an_enclosed_island():
     outer = Polygon([(0, 0), (10, 0), (10, 10), (0, 10)])
     hole = [(4, 4), (6, 4), (6, 6), (4, 6)]
     donut_parcel = Polygon([(0, 0), (10, 0), (10, 10), (0, 10)], holes=[hole])
     island_parcel = Polygon(hole)
     parcel_polygons = {0: _geom(donut_parcel), 1: _geom(island_parcel)}
-    with pytest.raises(NotImplementedError, match="island"):
-        parcels_to_graph(parcel_polygons, _geom(outer))
+    graph = parcels_to_graph(parcel_polygons, _geom(outer))
+    assert set(graph.face_parcel_ids.values()) == {0, 1}
+    assert sum(p.area for p in graph.faces_to_polygons().values()) == pytest.approx(100)
 
 
 def test_parcels_to_graph_rejects_a_parcel_in_the_wrong_crs():

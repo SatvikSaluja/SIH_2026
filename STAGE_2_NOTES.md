@@ -1,4 +1,8 @@
+Update (September 9): see [FOUNDATION_GAPS_NOTES.md](FOUNDATION_GAPS_NOTES.md) for parcel identity, interior rings, area guards, replay, and resumable training. Historical limitations below are superseded only where that note explicitly says so.
+
 # Stage 2 — store, versioning, provenance
+
+> Update (8 September 2026): the subsequent whole-codebase fixes supersede affected behavior described below. See [REVIEW_FIXES_NOTES.md](REVIEW_FIXES_NOTES.md) for the corrected transaction, evidence, calibration, and evaluation contracts.
 
 ## Environment
 Real local PostgreSQL 16.15 + PostGIS 3.4.2, installed via `apt` (not Docker --
