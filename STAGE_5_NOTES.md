@@ -1,3 +1,5 @@
+Update: [CAPACITY_AND_SUBDIVISION_NOTES.md](CAPACITY_AND_SUBDIVISION_NOTES.md) documents generator version 2, constrained capacity refinement, and the corrected fusion corner behavior. Historical deferrals below are superseded where that note explicitly states so.
+
 # Stage 5 — fusion and conflict records
 
 > Update (8 September 2026): the subsequent whole-codebase fixes supersede affected behavior described below. See [REVIEW_FIXES_NOTES.md](REVIEW_FIXES_NOTES.md) for the corrected transaction, evidence, calibration, and evaluation contracts.

@@ -5,22 +5,11 @@ those points and does not degrade it elsewhere; and after fusion, every
 Stage 1 topology invariant still holds. That second assertion is the one
 that catches the classic bug."
 
-Built around a deterministic, hand-built 3x3 grid of parcels rather than a
-generated synthetic ward's own blocks: found by review that this project's
-actual block-subdivision styles (strip/institutional/single-cut/recursive-
-organic) never produce a genuinely interior node -- every interior cut's
-own endpoints land back on the block's true perimeter too (confirmed by
-reading `_recursive_split`/`_strip_split` in synth/generator.py, and
-empirically across 40 real synthetic seeds: zero interior nodes, every
-time). Since fusion correctly never moves an exterior node (see
-core/fusion.py's `_is_exterior_node`, needed to keep the block's own total
-area invariant), a real ward's blocks exercise only the "nothing moves"
-half of fusion -- covered separately below -- not the actual "GT/legacy
-evidence corrects an imprecise position" mechanism this Done-when
-criterion is actually about. A hand-built grid with a real interior point
-(matching the precedent already set for the deterministic overlap
-regression in test_changeset.py) tests the real mechanism directly and
-deterministically, instead of hoping some future seed produces one.
+The deterministic grid isolates evidence-driven interior-node motion.
+Real generated wards separately exercise exterior handling and topology.
+Generator version 2 nodes subdivision cuts together, so genuine interior
+junctions are represented; the historical claim that all generated nodes
+were exterior was an artifact of disconnected boundary representations.
 """
 import numpy as np
 import pytest
@@ -96,11 +85,8 @@ def test_gt_points_improve_accuracy_near_them_without_degrading_elsewhere():
 
 
 def test_exterior_nodes_are_never_moved_without_a_block_boundary(db_session: Session):
-    """Real synthetic wards' own blocks never have a genuinely interior
-    node (see module docstring) -- confirm fusion's response to that is
-    exactly "move nothing", not silently something else, on a real ward's
-    block, WHEN NO `block_boundary` is given (the safe fallback). With one
-    given, exterior nodes can move -- see the tests below."""
+    """Without an authoritative block boundary, all exterior nodes stay
+    fixed. Interior nodes may still use the available survey evidence."""
     ward = generate_ward(seed=300)
     by_block: dict = {}
     for p in ward.parcels:
@@ -115,8 +101,10 @@ def test_exterior_nodes_are_never_moved_without_a_block_boundary(db_session: Ses
 
     gt_xy = [(g.x, g.y) for g in ward.gt_points if g.parcel_id in {p.id for p in parcels}]
     result = fuse_block(graph, list(graph.nodes), style=block.style, gt_points=gt_xy, tolerance=8.0)
-    assert not result.moved
-    assert set(result.unchanged) == set(graph.nodes)
+    exterior = {nid for nid in graph.nodes if _is_exterior_node(graph,nid)}
+    assert exterior
+    assert exterior <= set(result.unchanged)
+    assert exterior.isdisjoint(result.moved)
 
 
 def _real_ward_blocks(seeds):
@@ -141,9 +129,7 @@ def test_block_boundary_fusion_never_produces_overlapping_or_invalid_geometry_on
     exterior nodes against their own true `block_boundary` (straight from
     `ward.blocks`, standing in for `build_blocks()`'s own output) never
     leaves an overlapping or invalid face, and applies a real majority of
-    the candidate moves rather than degrading to a near no-op. Does not
-    assert exact total-area conservation -- see the xfail test below for
-    why that specific property is not (yet) reliably met on real data."""
+    the candidate moves rather than degrading to a near no-op. Also checks total-area conservation across the seed sweep."""
     n_blocks_tested = 0
     for db_block_id, (ward, block, parcels) in enumerate(_real_ward_blocks(range(300, 340))):
         # `block.id` restarts from 0 for every generate_ward() call -- reusing
@@ -172,6 +158,7 @@ def test_block_boundary_fusion_never_produces_overlapping_or_invalid_geometry_on
         final_graph = load_block_graph(db_session, db_block_id)
         faces = final_graph.faces_to_polygons()
         assert all(f.geom.is_valid for f in faces.values()), f"seed {ward.seed}: an invalid face was persisted"
+        assert abs(sum(f.area for f in faces.values()) - block.polygon.area) <= _tol(block.polygon.area)
         ids = list(faces)
         for i in range(len(ids)):
             for j in range(i + 1, len(ids)):
@@ -187,22 +174,6 @@ def test_block_boundary_fusion_never_produces_overlapping_or_invalid_geometry_on
 
 
 @pytest.mark.slow
-@pytest.mark.xfail(
-    reason=(
-        "Known, root-caused gap (see STAGE_5_NOTES.md): this project's synthetic generator's "
-        "_recursive_split()/_strip_split() do not always exactly reproduce their own input polygon's "
-        "boundary shape (confirmed: matching total area but up to ~19m of Hausdorff boundary "
-        "deviation on a real block, including a near-zero-area but real-extent internal gap between "
-        "two parcels that should be exactly adjacent) -- a Stage 0 GEOS-precision artifact, not a "
-        "Stage 5 fusion defect. Projecting exterior nodes onto ward.blocks[i].polygon (the intended "
-        "authoritative reference) is then projecting onto a boundary that isn't quite the same shape "
-        "the rest of the (untouched) graph already assumes, which the total-area invariant is precise "
-        "enough to detect even though no overlap or invalid face results (verified separately, see "
-        "the safety test above). Fixing this needs Stage 0's recursive-split precision fixed, not a "
-        "Stage 5 change -- not weakened or hidden, reports the real numbers on failure."
-    ),
-    strict=False,
-)
 def test_block_boundary_fusion_conserves_total_area_on_real_wards(db_session: Session):
     ward, block, parcels = next(_real_ward_blocks([300]))
     domain_area = sum(p.area for p in parcels)

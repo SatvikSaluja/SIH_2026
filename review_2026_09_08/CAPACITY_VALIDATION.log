@@ -1,0 +1,48 @@
+........................................................................ [ 16%]
+........................................................................ [ 33%]
+........................................................................ [ 50%]
+....................................................................x... [ 67%]
+........................................................................ [ 84%]
+....................................................................     [100%]
+=============================== warnings summary ===============================
+.venv/lib/python3.12/site-packages/fastapi/testclient.py:1
+  /home/satvik/SIH_2026/.venv/lib/python3.12/site-packages/fastapi/testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient as TestClient  # noqa
+
+.venv/lib/python3.12/site-packages/starlette/testclient.py:53
+  /home/satvik/SIH_2026/.venv/lib/python3.12/site-packages/starlette/testclient.py:53: DeprecationWarning: The anyio.abc.BlockingPortal alias is deprecated, use anyio.from_thread.BlockingPortal instead.
+    _PortalFactoryType = Callable[[], AbstractContextManager[anyio.abc.BlockingPortal]]
+
+geocadastra/tests/test_api.py: 89 warnings
+geocadastra/tests/test_blocks.py: 6 warnings
+geocadastra/tests/test_capacity_refinement.py: 3 warnings
+geocadastra/tests/test_changeset.py: 8 warnings
+geocadastra/tests/test_orchestrator.py: 72 warnings
+geocadastra/tests/test_parcel_contracts.py: 9 warnings
+geocadastra/tests/test_review_regressions.py: 25 warnings
+geocadastra/tests/test_stage1_roundtrip.py: 141 warnings
+geocadastra/tests/test_stage4_acceptance.py: 30 warnings
+geocadastra/tests/test_stage5_fusion_acceptance.py: 42 warnings
+geocadastra/tests/test_stage6_acceptance.py: 600 warnings
+geocadastra/tests/test_stage7_acceptance.py: 5 warnings
+geocadastra/tests/test_stage8_acceptance.py: 9 warnings
+geocadastra/tests/test_subdivision_precision.py: 11 warnings
+geocadastra/tests/test_synth.py: 159 warnings
+geocadastra/tests/test_train.py: 18 warnings
+geocadastra/tests/test_training_resume.py: 5 warnings
+geocadastra/tests/test_transport.py: 62 warnings
+  /home/satvik/SIH_2026/.venv/lib/python3.12/site-packages/rasterio/transform.py:178: PendingDeprecationWarning: Use `@` matmul instead of `*` mul operator for matrix multiplication
+    return Affine.translation(west, north) * Affine.scale(xsize, -ysize)
+
+geocadastra/tests/test_api.py: 3483 warnings
+geocadastra/tests/test_capacity_refinement.py: 6 warnings
+geocadastra/tests/test_orchestrator.py: 9091 warnings
+geocadastra/tests/test_review_regressions.py: 28 warnings
+geocadastra/tests/test_stage8_acceptance.py: 1303 warnings
+  /home/satvik/SIH_2026/geocadastra/jobs/orchestrator.py:259: PendingDeprecationWarning: Use `@` matmul instead of `*` mul operator for matrix multiplication
+    col, row = ~transform * (node.x, node.y)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+XFAIL geocadastra/tests/test_stage4_acceptance.py::test_sdf_zero_level_set_and_variance_separation_on_held_out_wards - Known, documented gap (see STAGE_4_NOTES.md): CPU-only training at this scale does not reliably meet the 1px median boundary error / invisible>visible variance targets. Not weakened or skipped -- reports actual numbers, re-run first once GPU training lands.
+427 passed, 1 xfailed, 15207 warnings in 1767.00s (0:29:26)

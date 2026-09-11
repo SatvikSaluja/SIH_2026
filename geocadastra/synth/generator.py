@@ -87,8 +87,11 @@ class WardParams:
     )
 
     gt_point_fraction: float = 0.08  # fraction of parcel corners sampled as exact GT points
+    generator_version: int = 2  # persisted with ward params; v1 remains reproducible
 
     def __post_init__(self):
+        if self.generator_version not in (1, 2):
+            raise ValueError("unsupported synthetic generator version")
         lo, hi = self.strip_count_range
         if lo > hi:
             raise ValueError(f"strip_count_range must be (low, high) with low <= high, got {self.strip_count_range}")
@@ -369,6 +372,16 @@ def _recursive_split(poly, rng, min_area, max_depth, depth=0, budget=None):
 
 
 def _subdivide_block(poly, style, params, rng):
+    if params.generator_version == 2:
+        from geocadastra.synth.subdivision import strip_partition, recursive_partition
+        if style == "formal":
+            n = int(rng.integers(params.strip_count_range[0], params.strip_count_range[1] + 1))
+            return strip_partition(poly, n, rng)
+        if style == "institutional":
+            if rng.random() < params.institutional_single_prob:
+                return [poly]
+            return recursive_partition(poly, rng, poly.area / 2.2, 1)
+        return recursive_partition(poly, rng, params.informal_min_area, params.informal_max_depth)
     if style == "formal":
         n = int(rng.integers(params.strip_count_range[0], params.strip_count_range[1] + 1))
         return _strip_split(poly, n, rng)

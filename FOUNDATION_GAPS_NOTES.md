@@ -1,3 +1,5 @@
+Update: [CAPACITY_AND_SUBDIVISION_NOTES.md](CAPACITY_AND_SUBDIVISION_NOTES.md) documents generator version 2, constrained capacity refinement, and the corrected fusion corner behavior. Historical deferrals below are superseded where that note explicitly states so.
+
 GeoCadastra — foundational gaps, September 9, 2026
 
 This change builds on the 18 fixes in REVIEW_FIXES_NOTES.md. It closes the

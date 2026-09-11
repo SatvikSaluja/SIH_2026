@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from geocadastra.core.crs import CRSMismatchError, Geom
 from geocadastra.core.fusion import DEFAULT_SIGMA_LEGACY_BY_STYLE, fuse_block
 from geocadastra.core.transport import assign_parcels, parcels_to_graph
+from geocadastra.core.capacity import refine_recorded_areas
 from geocadastra.store.changeset import allocate_ids, apply_fusion, load_block_graph, lock_block, seed_block_graph
 from geocadastra.store.constraints import parcel_area_report
 from geocadastra.store.schema import (
@@ -176,7 +177,9 @@ def _regenerate_ward(source: str, params: dict):
     if not source.startswith("synthetic:seed="):
         raise ValueError(f"don't know how to regenerate a ward from source {source!r}")
     seed = int(source.removeprefix("synthetic:seed="))
-    return generate_ward(params=WardParams(**params), seed=seed)
+    # Jobs ingested before versioning used the independent-child splitter.
+    # Never regenerate their evidence using a different ground truth.
+    return generate_ward(params=WardParams(**{"generator_version": 1, **params}), seed=seed)
 
 
 @app.task(bind=True, max_retries=3, default_retry_delay=5)
@@ -251,8 +254,27 @@ def process_block(self, db_url: str, schema: str, ward_job_id: int, block_id: in
         # retain its IDs/history and re-run fusion; never seed on top of it.
         if session.scalar(select(Face.id).where(Face.block_id == block_id).limit(1)) is None:
             fresh_graph = parcels_to_graph(parcel_polygons, block_geom)
+            weights = {}
+            for nid, node in fresh_graph.nodes.items():
+                col, row = ~transform @ (node.x, node.y)
+                row = min(max(int(round(row)), 0), evidence_field.shape[0] - 1)
+                col = min(max(int(round(col)), 0), evidence_field.shape[1] - 1)
+                weights[nid] = 1.0 + 20.0 * float(evidence_field[row, col])
+            refinement = refine_recorded_areas(
+                fresh_graph, block_geom, {r.id: r.area for r in recorded},
+                {r.id: r.area_tolerance_m2 for r in recorded}, node_weights=weights,
+            )
+            fresh_graph = refinement.graph
+            if not refinement.converged:
+                session.add(PersistedConflict(
+                    ward_job_id=ward_job_id, block_id=block_id, node_id=-1,
+                    kind="area_refinement_unresolved", detail=refinement.detail,
+                    sources=["recorded_area", "constrained_refinement"], disagreement_m=None,
+                    geom=from_shape(block_geom.geom, srid=SRID),
+                ))
             seed = seed_block_graph(session, block_id, fresh_graph, author="orchestrator", description="ingest: parcel assignment",
                 evidence={"method": "capacity_constrained_transport", "ward_job_id": ward_job_id,
+                          "area_refinement": refinement.detail,
                           "recorded_parcel_ids": parcel_ids, "source": ward_source, "n_segments": n_segments,
                           "assignment_conflicts": [dataclasses.asdict(c) for c in result.conflicts]})
             for conflict in fresh_graph.identity_conflicts:

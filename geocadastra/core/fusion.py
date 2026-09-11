@@ -59,6 +59,7 @@ from shapely.ops import nearest_points
 from geocadastra.core.conflicts import ConflictRecord, max_pairwise_disagreement
 from geocadastra.core.crs import CRSMismatchError, Geom
 from geocadastra.core.graph import OUTER, PlanarGraph
+from geocadastra.core.planarize import GRID
 from geocadastra.core.transport import _world_to_pixel
 
 # doc: "Legacy GIS reliability is conditioned on the block's land-use
@@ -535,6 +536,15 @@ def fuse_block(
         elif isinstance(result, ConflictRecord):
             conflicts.append(result)
         elif is_exterior:
+            # Classify an established corner from its ORIGINAL position,
+            # not from where noisy evidence would move it. Projecting the
+            # candidate alone can slide a corner onto an incident edge and
+            # cut off a valid-looking triangle of block land.
+            corner = next((xy for xy in ring.coords[:-1]
+                           if Point(node.x, node.y).distance(Point(xy)) <= 2 * GRID), None)
+            if corner is not None:
+                moved[node_id] = FusedPosition(x=corner[0], y=corner[1], sigma=result.sigma, sources=result.sources)
+                continue
             dist_lo, dist_hi = _ring_neighbor_bounds(graph, node_id, ring)
             if dist_lo is None:
                 unchanged.append(node_id)  # not a simple ring point -- don't risk it
