@@ -1,0 +1,1 @@
+- [Generated client DOM iterable](api-client-dom-iterable.md) — keep `dom.iterable` in the shared client compiler libs for generated fetch helpers.

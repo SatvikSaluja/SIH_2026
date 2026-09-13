@@ -1,0 +1,343 @@
+openapi: 3.1.0
+info:
+  # Do not change the title, if the title changes, the import paths will be broken
+  title: Api
+  version: 0.1.0
+  description: API specification
+servers:
+  - url: /api
+    description: Base API path
+tags:
+  - name: health
+    description: Health operations
+  - name: command-center
+    description: BhoomiAI command center data
+  - name: processing
+    description: GeoAI processing and topology actions
+  - name: parcels
+    description: Extracted parcel and change records
+paths:
+  /healthz:
+    get:
+      operationId: healthCheck
+      tags: [health]
+      summary: Health check
+      description: Returns server health status
+      responses:
+        "200":
+          description: Healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+  /dashboard:
+    get:
+      operationId: getDashboard
+      tags: [command-center]
+      summary: Get command center summary
+      responses:
+        "200":
+          description: Dashboard summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DashboardSummary"
+  /regions:
+    get:
+      operationId: listRegions
+      tags: [command-center]
+      summary: List available regions
+      responses:
+        "200":
+          description: Regions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Region"
+  /parcels:
+    get:
+      operationId: listParcels
+      tags: [parcels]
+      summary: List extracted parcels
+      parameters:
+        - name: regionId
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Parcels
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Parcel"
+  /parcels/{id}:
+    get:
+      operationId: getParcel
+      tags: [parcels]
+      summary: Get parcel details
+      parameters:
+        - $ref: "#/components/parameters/ParcelId"
+      responses:
+        "200":
+          description: Parcel
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Parcel"
+        "404":
+          description: Parcel not found
+    patch:
+      operationId: updateParcel
+      tags: [parcels]
+      summary: Update parcel status or geometry
+      parameters:
+        - $ref: "#/components/parameters/ParcelId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ParcelUpdate"
+      responses:
+        "200":
+          description: Updated parcel
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Parcel"
+  /processing/runs:
+    get:
+      operationId: listProcessingRuns
+      tags: [processing]
+      summary: List recent processing runs
+      responses:
+        "200":
+          description: Processing runs
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ProcessingRun"
+    post:
+      operationId: createProcessingRun
+      tags: [processing]
+      summary: Start an inference run
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProcessingRunInput"
+      responses:
+        "201":
+          description: Processing run started
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProcessingRun"
+  /topology/scan:
+    post:
+      operationId: scanTopology
+      tags: [processing]
+      summary: Scan parcel topology
+      responses:
+        "200":
+          description: Topology report
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TopologyReport"
+  /topology/fix:
+    post:
+      operationId: fixTopology
+      tags: [processing]
+      summary: Auto-fix topology errors
+      responses:
+        "200":
+          description: Fixed topology report
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TopologyReport"
+  /changes:
+    get:
+      operationId: listChanges
+      tags: [parcels]
+      summary: List temporal change detections
+      responses:
+        "200":
+          description: Change detections
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ChangeDetection"
+  /exports:
+    post:
+      operationId: createExport
+      tags: [command-center]
+      summary: Create a GIS export package
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ExportInput"
+      responses:
+        "201":
+          description: Export package
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExportJob"
+components:
+  parameters:
+    ParcelId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+  schemas:
+    HealthStatus:
+      type: object
+      properties:
+        status:
+          type: string
+      required:
+        - status
+    Region:
+      type: object
+      required: [id, name, type, processedSqKm, parcelCount, updatedAt]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        type: { type: string }
+        processedSqKm: { type: number }
+        parcelCount: { type: integer }
+        updatedAt: { type: string }
+    DashboardSummary:
+      type: object
+      required: [areaProcessedSqKm, parcelsExtracted, topologyErrors, encroachments, accuracyScore, activeRun, recentActivity]
+      properties:
+        areaProcessedSqKm: { type: number }
+        parcelsExtracted: { type: integer }
+        topologyErrors: { type: integer }
+        encroachments: { type: integer }
+        accuracyScore: { type: number }
+        activeRun:
+          oneOf:
+            - $ref: "#/components/schemas/ProcessingRun"
+            - type: "null"
+        recentActivity:
+          type: array
+          items: { $ref: "#/components/schemas/Activity" }
+    Activity:
+      type: object
+      required: [id, title, detail, time, tone]
+      properties:
+        id: { type: string }
+        title: { type: string }
+        detail: { type: string }
+        time: { type: string }
+        tone: { type: string }
+    Parcel:
+      type: object
+      required: [id, ulpin, regionId, regionName, areaSqM, ownership, confidence, status, geometry, updatedAt]
+      properties:
+        id: { type: string }
+        ulpin: { type: string }
+        regionId: { type: string }
+        regionName: { type: string }
+        areaSqM: { type: number }
+        ownership: { type: string }
+        confidence: { type: number }
+        status: { type: string }
+        geometry:
+          type: array
+          items:
+            type: array
+            items: { type: number }
+        updatedAt: { type: string }
+    ParcelUpdate:
+      type: object
+      properties:
+        status: { type: string }
+        geometry:
+          type: array
+          items:
+            type: array
+            items: { type: number }
+    ProcessingRun:
+      type: object
+      required: [id, name, regionId, regionName, status, progress, currentStep, steps, startedAt]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        regionId: { type: string }
+        regionName: { type: string }
+        status: { type: string }
+        progress: { type: integer }
+        currentStep: { type: string }
+        steps:
+          type: array
+          items: { type: string }
+        startedAt: { type: string }
+    ProcessingRunInput:
+      type: object
+      required: [regionId, dataset]
+      properties:
+        regionId: { type: string }
+        dataset: { type: string }
+    TopologyReport:
+      type: object
+      required: [scannedAt, errorCount, fixedCount, overlapCount, sliverCount, ringCount, status]
+      properties:
+        scannedAt: { type: string }
+        errorCount: { type: integer }
+        fixedCount: { type: integer }
+        overlapCount: { type: integer }
+        sliverCount: { type: integer }
+        ringCount: { type: integer }
+        status: { type: string }
+    ChangeDetection:
+      type: object
+      required: [id, title, regionName, category, areaSqM, detectedAt, severity]
+      properties:
+        id: { type: string }
+        title: { type: string }
+        regionName: { type: string }
+        category: { type: string }
+        areaSqM: { type: number }
+        detectedAt: { type: string }
+        severity: { type: string }
+    ExportInput:
+      type: object
+      required: [format, regionId]
+      properties:
+        format: { type: string }
+        regionId: { type: string }
+    ExportJob:
+      type: object
+      required: [id, format, regionId, status, createdAt, fileName]
+      properties:
+        id: { type: string }
+        format: { type: string }
+        regionId: { type: string }
+        status: { type: string }
+        createdAt: { type: string }
+        fileName: { type: string }
+
