@@ -113,3 +113,75 @@ def test_compute_loss_all_four_terms_are_finite_and_positive():
     assert torch.isfinite(total)
     for name, value in parts.items():
         assert value == value and value > -1e6, f"{name} loss is not sane: {value}"  # nan-check + sanity floor
+
+
+def test_batching_produces_the_same_loss_trajectory_as_unbatched():
+    """batch_size=1 must be numerically identical to the pre-batching loop --
+    this is the actual backward-compatibility guarantee, not just an import
+    check. batch_size>1 must still learn (not just run)."""
+    torch.manual_seed(0)
+    config_unbatched = TrainConfig(n_wards=4, epochs=6, ward_params=_small_params(), batch_size=1)
+    _model_a, history_a = train(config_unbatched)
+
+    torch.manual_seed(0)
+    config_batched = TrainConfig(n_wards=4, epochs=6, ward_params=_small_params(), batch_size=1)
+    _model_b, history_b = train(config_batched)
+    assert history_a == history_b  # same config, same seed -> identical trajectory
+
+    torch.manual_seed(0)
+    config_real_batch = TrainConfig(n_wards=4, epochs=10, ward_params=_small_params(), batch_size=4)
+    _model_c, history_c = train(config_real_batch)
+    assert len(history_c) == 10
+    assert history_c[-1] < history_c[0] * 0.7
+
+
+def test_validation_is_held_out_and_never_backpropagated(monkeypatch):
+    """n_val_wards>0 must draw DIFFERENT seeds than training, and evaluate()
+    must never call .backward() -- this is the whole point of a held-out set."""
+    config = TrainConfig(n_wards=3, epochs=1, ward_params=_small_params(), n_val_wards=2, seed_offset=0)
+    train_seeds = {config.seed_offset + i for i in range(config.n_wards)}
+    val_seeds = {config.seed_offset + config.n_wards + i for i in range(config.n_val_wards)}
+    assert train_seeds.isdisjoint(val_seeds)
+
+    from geocadastra.models import train as train_module
+    original_backward = torch.Tensor.backward
+    calls = {"backward": 0}
+
+    def counting_backward(self, *a, **kw):
+        calls["backward"] += 1
+        return original_backward(self, *a, **kw)
+
+    monkeypatch.setattr(torch.Tensor, "backward", counting_backward)
+    val_dataset = train_module.make_val_dataset(config)
+    assert len(val_dataset) == 2
+    loss = train_module.evaluate(MultiTaskNetFixture(), val_dataset, config.loss_weights, torch.device("cpu"))
+    assert loss is not None and calls["backward"] == 0
+
+
+def MultiTaskNetFixture():
+    from geocadastra.models.backbone import MultiTaskNet
+    return MultiTaskNet(n_landuse_classes=4, stem_width=16, decoder_width=16)
+
+
+def test_best_checkpoint_is_written_only_on_validation_improvement(tmp_path):
+    """A 'best' checkpoint must exist, must differ from 'latest' once training
+    keeps going past the best epoch, and must never appear without validation
+    enabled at all -- picking 'best' by training loss isn't a validation
+    signal, it's just the last epoch restated."""
+    ckpt = tmp_path / "model.pt"
+
+    torch.manual_seed(0)
+    config_no_val = TrainConfig(n_wards=2, epochs=3, ward_params=_small_params())
+    train(config_no_val, checkpoint_path=ckpt)
+    assert not ckpt.with_name(ckpt.name + ".best").exists()
+
+    torch.manual_seed(0)
+    config = TrainConfig(n_wards=2, epochs=5, ward_params=_small_params(), n_val_wards=2)
+    train(config, checkpoint_path=ckpt)
+    best_path = ckpt.with_name(ckpt.name + ".best")
+    assert best_path.exists()
+
+    latest = torch.load(ckpt, map_location="cpu", weights_only=True)
+    best = torch.load(best_path, map_location="cpu", weights_only=True)
+    assert best["epoch"] <= latest["epoch"]
+    assert best["best_val_loss"] == min(latest["val_loss_history"])

@@ -27,6 +27,17 @@ class TrainConfig:
     lr: float = 1e-3
     seed_offset: int = 0
     device: str = "cpu"
+    # 1 reproduces the original per-ward loop exactly (existing checkpoints/
+    # tests are unaffected when this is left at its default). A GPU run
+    # should set this explicitly -- one sample per forward/backward pass
+    # is why the CPU loop never needed batching, and porting it unchanged
+    # to a GPU wastes most of the device's parallelism per step.
+    batch_size: int = 1
+    # 0 disables validation entirely (default, zero behavior change).
+    # Nonzero draws that many EXTRA wards from seeds strictly after the
+    # training range (seed_offset+n_wards .. +n_val_wards), so held-out
+    # wards can never silently coincide with a training one.
+    n_val_wards: int = 0
     ward_params: WardParams = field(
         default_factory=lambda: WardParams(width=64, height=64, gsd=1.0, n_arterial_h=0, n_arterial_v=0, minor_spacing=30)
     )
@@ -38,6 +49,45 @@ def make_dataset(config: TrainConfig) -> list[dict[str, torch.Tensor]]:
         ward_to_tensors(generate_ward(params=config.ward_params, seed=config.seed_offset + i))
         for i in range(config.n_wards)
     ]
+
+
+def make_val_dataset(config: TrainConfig) -> list[dict[str, torch.Tensor]]:
+    start = config.seed_offset + config.n_wards
+    return [
+        ward_to_tensors(generate_ward(params=config.ward_params, seed=start + i))
+        for i in range(config.n_val_wards)
+    ]
+
+
+def _stack_batch(group: list[dict[str, torch.Tensor]], device) -> dict[str, torch.Tensor]:
+    keys = ("rgb", "ndsm", "sdf_true", "road_true", "building_true", "landuse_true")
+    return {key: torch.stack([sample[key] for sample in group]).to(device) for key in keys}
+
+
+def _forward_loss(model, batch: dict[str, torch.Tensor], loss_weights: dict):
+    out = model(batch["rgb"], batch["ndsm"])
+    targets = {
+        "sdf_true": batch["sdf_true"], "road_true": batch["road_true"],
+        "building_true": batch["building_true"], "landuse_true": batch["landuse_true"],
+    }
+    return compute_loss(out, targets, loss_weights)
+
+
+@torch.no_grad()
+def evaluate(model, val_dataset: list[dict[str, torch.Tensor]], loss_weights: dict, device) -> float | None:
+    """Mean per-ward loss on held-out wards, never used for a gradient step."""
+    if not val_dataset:
+        return None
+    was_training = model.training
+    model.eval()
+    total = 0.0
+    for sample in val_dataset:
+        batch = _stack_batch([sample], device)
+        loss, _ = _forward_loss(model, batch, loss_weights)
+        total += loss.item()
+    if was_training:
+        model.train()
+    return total / len(val_dataset)
 
 
 def compute_loss(out: dict[str, torch.Tensor], batch: dict[str, torch.Tensor], weights: dict) -> tuple[torch.Tensor, dict]:
@@ -64,10 +114,12 @@ def train(config: TrainConfig | None = None, model: MultiTaskNet | None = None, 
     A custom architecture must be supplied again when resuming it.
     """
     config = config or TrainConfig()
-    if config.n_wards < 1 or config.epochs < 1 or (max_epochs_per_run is not None and max_epochs_per_run < 1):
-        raise ValueError("ward and epoch counts must be positive")
+    if (config.n_wards < 1 or config.epochs < 1 or config.batch_size < 1 or config.n_val_wards < 0
+            or (max_epochs_per_run is not None and max_epochs_per_run < 1)):
+        raise ValueError("ward, epoch, batch-size and val-ward counts must be positive (val wards may be 0)")
     device = torch.device(config.device)
     dataset = make_dataset(config)
+    val_dataset = make_val_dataset(config)
     model = model or MultiTaskNet(n_landuse_classes=N_LANDUSE_CLASSES)
     model.to(device)
     model.train()
@@ -80,6 +132,8 @@ def train(config: TrainConfig | None = None, model: MultiTaskNet | None = None, 
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=config.epochs, eta_min=config.lr * 0.01)
 
     loss_history = []
+    val_loss_history = []
+    best_val_loss = float("inf")
     start_epoch = 0
     if resume_from is not None:
         checkpoint = torch.load(resume_from, map_location=device, weights_only=True)
@@ -92,46 +146,56 @@ def train(config: TrainConfig | None = None, model: MultiTaskNet | None = None, 
         optimizer.load_state_dict(checkpoint["optimizer"])
         scheduler.load_state_dict(checkpoint["scheduler"])
         loss_history = list(checkpoint["loss_history"])
+        val_loss_history = list(checkpoint.get("val_loss_history", []))
+        best_val_loss = checkpoint.get("best_val_loss", float("inf"))
         start_epoch = checkpoint["epoch"]
         torch.set_rng_state(checkpoint["rng_state"].cpu())
         if device.type == "cuda" and checkpoint.get("cuda_rng_state") is not None:
             torch.cuda.set_rng_state(checkpoint["cuda_rng_state"].cpu(), device=device)
+
+    def save_checkpoint(path: Path, epoch: int):
+        # A killed writer must leave the previous complete checkpoint usable.
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {"format_version": 1, "epoch": epoch, "config": asdict(config),
+                   "model": model.state_dict(), "optimizer": optimizer.state_dict(),
+                   "scheduler": scheduler.state_dict(), "loss_history": loss_history,
+                   "val_loss_history": val_loss_history, "best_val_loss": best_val_loss,
+                   "rng_state": torch.get_rng_state(),
+                   "cuda_rng_state": torch.cuda.get_rng_state(device) if device.type == "cuda" else None}
+        fd, temporary = tempfile.mkstemp(prefix=path.name + ".", dir=path.parent)
+        try:
+            with os.fdopen(fd, "wb") as stream:
+                torch.save(payload, stream)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, path)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
+
     stop_epoch = config.epochs if max_epochs_per_run is None else min(config.epochs, start_epoch + max_epochs_per_run)
     for _epoch in range(start_epoch, stop_epoch):
         epoch_loss = 0.0
-        for batch in dataset:
-            batch = {key: value.to(device) for key, value in batch.items()}
+        for start in range(0, len(dataset), config.batch_size):
+            group = dataset[start:start + config.batch_size]
+            batch = _stack_batch(group, device)
             optimizer.zero_grad()
-            out = model(batch["rgb"].unsqueeze(0), batch["ndsm"].unsqueeze(0))
-            targets = {
-                "sdf_true": batch["sdf_true"].unsqueeze(0),
-                "road_true": batch["road_true"].unsqueeze(0),
-                "building_true": batch["building_true"].unsqueeze(0),
-                "landuse_true": batch["landuse_true"].unsqueeze(0),
-            }
-            loss, _parts = compute_loss(out, targets, config.loss_weights)
+            loss, _parts = _forward_loss(model, batch, config.loss_weights)
             loss.backward()
             optimizer.step()
-            epoch_loss += loss.item()
+            epoch_loss += loss.item() * len(group)
         scheduler.step()
         loss_history.append(epoch_loss / len(dataset))
+        val_loss = evaluate(model, val_dataset, config.loss_weights, device)
+        if val_loss is not None:
+            val_loss_history.append(val_loss)
         if checkpoint_path is not None:
             path = Path(checkpoint_path)
-            path.parent.mkdir(parents=True, exist_ok=True)
-            payload = {"format_version": 1, "epoch": _epoch + 1, "config": asdict(config),
-                       "model": model.state_dict(), "optimizer": optimizer.state_dict(),
-                       "scheduler": scheduler.state_dict(), "loss_history": loss_history,
-                       "rng_state": torch.get_rng_state(),
-                       "cuda_rng_state": torch.cuda.get_rng_state(device) if device.type == "cuda" else None}
-            # A killed writer must leave the previous complete checkpoint usable.
-            fd, temporary = tempfile.mkstemp(prefix=path.name + ".", dir=path.parent)
-            try:
-                with os.fdopen(fd, "wb") as stream:
-                    torch.save(payload, stream)
-                    stream.flush()
-                    os.fsync(stream.fileno())
-                os.replace(temporary, path)
-            finally:
-                if os.path.exists(temporary):
-                    os.unlink(temporary)
+            save_checkpoint(path, _epoch + 1)
+            # A "best" checkpoint only exists when there's something held out
+            # to judge it by -- picking "best epoch" by TRAINING loss is not
+            # a validation signal, it's just the last epoch restated.
+            if val_loss is not None and val_loss < best_val_loss:
+                best_val_loss = val_loss
+                save_checkpoint(path.with_name(path.name + ".best"), _epoch + 1)
     return model, loss_history
