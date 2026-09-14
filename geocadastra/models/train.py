@@ -147,7 +147,7 @@ def train(config: TrainConfig | None = None, model: MultiTaskNet | None = None, 
         scheduler.load_state_dict(checkpoint["scheduler"])
         loss_history = list(checkpoint["loss_history"])
         val_loss_history = list(checkpoint.get("val_loss_history", []))
-        best_val_loss = checkpoint.get("best_val_loss", float("inf"))
+        best_val_loss = min(val_loss_history, default=float("inf"))
         start_epoch = checkpoint["epoch"]
         torch.set_rng_state(checkpoint["rng_state"].cpu())
         if device.type == "cuda" and checkpoint.get("cuda_rng_state") is not None:
@@ -191,11 +191,12 @@ def train(config: TrainConfig | None = None, model: MultiTaskNet | None = None, 
             val_loss_history.append(val_loss)
         if checkpoint_path is not None:
             path = Path(checkpoint_path)
-            save_checkpoint(path, _epoch + 1)
             # A "best" checkpoint only exists when there's something held out
             # to judge it by -- picking "best epoch" by TRAINING loss is not
             # a validation signal, it's just the last epoch restated.
             if val_loss is not None and val_loss < best_val_loss:
                 best_val_loss = val_loss
                 save_checkpoint(path.with_name(path.name + ".best"), _epoch + 1)
+            # Persist the updated minimum, so resume cannot promote a worse epoch.
+            save_checkpoint(path, _epoch + 1)
     return model, loss_history

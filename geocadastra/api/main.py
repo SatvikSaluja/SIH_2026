@@ -23,6 +23,7 @@ from geocadastra.store.constraints import parcel_area_report
 import os
 
 from fastapi import Depends, FastAPI, HTTPException, Response
+from fastapi.middleware.cors import CORSMiddleware
 from geoalchemy2.shape import from_shape, to_shape
 from pydantic import BaseModel, Field
 from shapely.affinity import affine_transform
@@ -50,6 +51,17 @@ from geocadastra.store.schema import (
 from geocadastra.synth.generator import WardParams, generate_ward
 
 app = FastAPI(title="GeoCadastra")
+
+# No auth exists yet (see api/main.py's own module docstring gaps), so this
+# is a dev-scoped allowlist, not "*": GEOCADASTRA_CORS_ORIGINS overrides it
+# for a real deployment, but the default must not silently accept every
+# origin just because a browser client showed up.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=os.environ.get("GEOCADASTRA_CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(","),
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 _DB_URL = os.environ.get("GEOCADASTRA_DB_URL", "postgresql+psycopg://geocadastra:geocadastra@localhost:5432/geocadastra")
 _DB_SCHEMA = os.environ.get("GEOCADASTRA_DB_SCHEMA", "public")

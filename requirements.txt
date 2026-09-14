@@ -32,3 +32,5 @@ celery==5.6.3
 redis==8.1.0            # the Celery broker's Python client -- a real Redis server is a deploy-time
                          # dependency, not a test one: tests run Celery in eager mode (no broker needed)
 httpx==0.28.1            # FastAPI's own TestClient needs it; already a transitive dep, pinned explicitly
+python-multipart==0.0.32 # Multipart form parsing support
+Pillow==12.3.0            # Image decoding and PNG preparation helpers
