@@ -209,7 +209,7 @@ def _load_model(weights_path: str):
     return model, hashlib.sha256(open(weights_path, "rb").read()).hexdigest()[:16]
 
 
-def _block_evidence(session, ward_job_id: int, block_geom, ward, local_block_id: int):
+def _block_evidence(session, ward_job_id: int, block_geom, regenerate_ward, local_block_id: int):
     """Model prediction when weights are configured, simulation otherwise.
 
     Returns `(evidence_field, transform, provenance)`. The simulated field is
@@ -219,14 +219,18 @@ def _block_evidence(session, ward_job_id: int, block_geom, ward, local_block_id:
     a model result it did not come from.
 
     On the model path the pixels come from the stored rasters when the ward
-    has them, reading only this block's window; `ward` is the regeneration
-    fallback for jobs ingested before rasters were stored. Simulation still
-    needs the regenerated ward, because it is derived from that ward's own
-    ground-truth edges rather than from pixels at all.
+    has them, reading only this block's window. Simulation is derived from a
+    ward's own ground-truth edges rather than from pixels at all, so it still
+    needs the generator.
+
+    `regenerate_ward` is a callable, not a ward, and is invoked ONLY on the
+    paths that cannot proceed without one. An ingested real ward has no seed
+    to regenerate from, so calling it would raise -- a ward whose imagery is
+    stored and whose evidence comes from the model must never need it.
     """
     weights_path = os.environ.get("GEOCADASTRA_MODEL_WEIGHTS")
     if not weights_path:
-        field, transform = simulate_evidence_field(ward, local_block_id)
+        field, transform = simulate_evidence_field(regenerate_ward(), local_block_id)
         return field, transform, {"evidence_source": "simulated"}
     from geocadastra.models.infer import block_evidence_from_model, evidence_from_rasters
     model, digest = _load_model(weights_path)
@@ -235,7 +239,7 @@ def _block_evidence(session, ward_job_id: int, block_geom, ward, local_block_id:
         rgb, ndsm, transform = read_block_window(session, ward_job_id, block_geom.geom.bounds)
         field, transform = evidence_from_rasters(model, rgb, ndsm, transform)
         return field, transform, {**provenance, "pixels": "stored"}
-    field, transform = block_evidence_from_model(model, ward, local_block_id)
+    field, transform = block_evidence_from_model(model, regenerate_ward(), local_block_id)
     return field, transform, {**provenance, "pixels": "regenerated"}
 
 
@@ -288,12 +292,13 @@ def process_block(self, db_url: str, schema: str, ward_job_id: int, block_id: in
             else []
         )
 
-        ward = _regenerate_ward(ward_source, ward_params)
-        # local_block_id, not the global block_id: the regenerated `ward` object
+        # local_block_id, not the global block_id: a regenerated `ward` object
         # still numbers its own blocks from 0 (see IngestedBlock.local_block_id's
-        # own docstring)
+        # own docstring). Regeneration is deferred, not performed: an ingested
+        # real ward has no seed, and must never reach the generator at all.
         evidence_field, transform, evidence_provenance = _block_evidence(
-            session, ward_job_id, block_geom, ward, block_row.local_block_id)
+            session, ward_job_id, block_geom,
+            lambda: _regenerate_ward(ward_source, ward_params), block_row.local_block_id)
 
         parcel_areas = [r.area for r in recorded]
         seed_points = [(to_shape(r.seed_point).x, to_shape(r.seed_point).y) for r in recorded]

@@ -82,7 +82,7 @@ def test_worker_defaults_to_simulation_and_records_which_source_ran(committed_se
     monkeypatch.delenv("GEOCADASTRA_MODEL_WEIGHTS", raising=False)
     job, block_id, _ = ingest(committed_session)
     regenerated, block_geom, local_id = _block_inputs(committed_session, job, block_id)
-    field, _, provenance = jobs._block_evidence(committed_session, job.id, block_geom, regenerated, local_id)
+    field, _, provenance = jobs._block_evidence(committed_session, job.id, block_geom, lambda: regenerated, local_id)
     assert provenance == {"evidence_source": "simulated"}
     expected, _ = simulate_evidence_field(regenerated, local_id)
     assert np.array_equal(field, expected)
@@ -101,7 +101,7 @@ def test_worker_uses_configured_weights_and_stamps_their_hash(committed_session,
     try:
         regenerated, block_geom, local_id = _block_inputs(committed_session, job, block_id)
         field, _, provenance = jobs._block_evidence(
-            committed_session, job.id, block_geom, regenerated, local_id)
+            committed_session, job.id, block_geom, lambda: regenerated, local_id)
         assert provenance["evidence_source"] == "model"
         assert len(provenance["weights_sha256"]) == 16
         # ingest stored the rasters, so the model must read them rather than
