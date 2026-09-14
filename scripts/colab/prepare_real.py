@@ -26,7 +26,13 @@ def compute_distance_and_mask(boundary, valid, ndsm, gsd_m):
 
 
 def main():
-    pilot, heights, out = Path('data/nz_pilot'), Path('data/nz_height_100'), Path('data/nz_multitask_real')
+    import argparse
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument('--pilot', default='data/nz_pilot', help='Parcel-labelled pilot root (e.g. data/nz_pilot_v2)')
+    p.add_argument('--heights', default='data/nz_height_100')
+    p.add_argument('--out', default='data/nz_multitask_real')
+    args = p.parse_args()
+    pilot, heights, out = Path(args.pilot), Path(args.heights), Path(args.out)
     out.mkdir(parents=True,exist_ok=True)
     manifest = json.loads((pilot/'manifest.json').read_text())
     result = dict(crs=manifest['crs'],gsd_m=.3,tiles=[],skipped=[],

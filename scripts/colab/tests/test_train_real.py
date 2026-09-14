@@ -128,3 +128,70 @@ def test_resume_refuses_a_config_mismatch(tmp_path):
     result = subprocess.run(mismatched, capture_output=True, text=True, timeout=60)
     assert result.returncode != 0
     assert "differs from checkpoint" in result.stderr
+
+
+def test_warm_start_loads_different_weights_than_cold_init(tmp_path):
+    """The actual claim: --warm-start must change the starting weights,
+    not just accept the flag and silently cold-init anyway."""
+    from geocadastra.models.backbone import MultiTaskNet
+
+    torch.manual_seed(999)  # deliberately NOT main()'s own seed (42)
+    source_model = MultiTaskNet()
+    source_ckpt = tmp_path / "synthetic_source.pt"
+    torch.save({"model": source_model.state_dict()}, source_ckpt)
+
+    data = _make_dataset(tmp_path / "data")
+    out = tmp_path / "run"
+    cmd = [sys.executable, str(Path(__file__).parents[1] / "train_real.py"),
+           "--data", str(data), "--out", str(out), "--cpu", "--epochs", "1",
+           "--batch-size", "2", "--warm-start", str(source_ckpt)]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    assert result.returncode == 0, result.stderr
+    assert "Warm-started from" in result.stdout or "Warm-started from" in result.stderr
+
+    # Reconstruct main()'s own cold-init weights (seed 42) to prove the
+    # ACTUAL run did NOT start from them.
+    torch.manual_seed(42)
+    cold = MultiTaskNet()
+
+    ckpt = torch.load(out / "last.pt", map_location="cpu", weights_only=True)
+    assert ckpt["warm_start_source"]["path"] == str(source_ckpt)
+
+    # sdf_head weights after 1 epoch of training starting from the warm
+    # source should be close to the SOURCE's sdf_head, not the cold-init one
+    # -- compare distances rather than exact equality, since one epoch of
+    # training does move the weights a little.
+    trained = MultiTaskNet()
+    trained.load_state_dict(ckpt["model"])
+    dist_to_source = sum((p1 - p2).abs().sum().item()
+                         for p1, p2 in zip(trained.sdf_head.parameters(), source_model.sdf_head.parameters()))
+    dist_to_cold = sum((p1 - p2).abs().sum().item()
+                       for p1, p2 in zip(trained.sdf_head.parameters(), cold.sdf_head.parameters()))
+    assert dist_to_source < dist_to_cold, (
+        f"trained weights are closer to cold init ({dist_to_cold:.4f}) than to the "
+        f"warm-start source ({dist_to_source:.4f}) -- warm start did not take effect")
+
+
+def test_warm_start_refuses_an_incompatible_architecture(tmp_path):
+    """A mismatched checkpoint must fail loudly, not partially load."""
+    incompatible = {"model": {"rgb_stem.net.0.conv.weight": torch.zeros(1, 1, 1, 1)}}
+    bad_ckpt = tmp_path / "bad_source.pt"
+    torch.save(incompatible, bad_ckpt)
+
+    data = _make_dataset(tmp_path / "data")
+    cmd = [sys.executable, str(Path(__file__).parents[1] / "train_real.py"),
+           "--data", str(data), "--out", str(tmp_path / "run"), "--cpu", "--epochs", "1",
+           "--warm-start", str(bad_ckpt)]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    assert result.returncode != 0
+    assert "Error" in result.stderr or "error" in result.stderr
+
+
+def test_warm_start_and_resume_are_mutually_exclusive(tmp_path):
+    data = _make_dataset(tmp_path / "data")
+    cmd = [sys.executable, str(Path(__file__).parents[1] / "train_real.py"),
+           "--data", str(data), "--out", str(tmp_path / "run"), "--cpu", "--epochs", "1",
+           "--warm-start", "/nonexistent.pt", "--resume"]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    assert result.returncode != 0
+    assert "mutually exclusive" in result.stderr

@@ -81,8 +81,12 @@ def main():
     p.add_argument('--cpu',action='store_true')
     p.add_argument('--resume',action='store_true')
     p.add_argument('--evaluate',action='store_true')
+    p.add_argument('--warm-start',help='Load model weights from a DIFFERENT checkpoint '
+                   '(e.g. a synthetic-trained one) before training starts. Distinct from '
+                   '--resume: this starts a fresh epoch 0/optimizer/history, not a continued run.')
     a = p.parse_args()
     if min(a.epochs,a.batch_size)<1: raise ValueError('Counts must be positive')
+    if a.warm_start and a.resume: raise ValueError('--warm-start and --resume are mutually exclusive')
     torch.set_num_threads(2)
     torch.manual_seed(42)
     device = torch.device('cuda' if torch.cuda.is_available() and not a.cpu else 'cpu')
@@ -91,6 +95,18 @@ def main():
     signature = hashlib.sha256((root/'manifest.json').read_bytes()).hexdigest()
     config = dict(batch_size=a.batch_size,patch_size=128,lr=.001,seed=42)
     model = MultiTaskNet().to(device)
+    warm_start_source = None
+    if a.warm_start:
+        source_path = Path(a.warm_start)
+        if not source_path.exists(): raise ValueError('--warm-start checkpoint does not exist: '+str(source_path))
+        source = torch.load(source_path,map_location=device,weights_only=True)
+        source_state = source.get('model',source)  # geocadastra.models.train's own checkpoint shape
+        # Loud, exact failure on any architecture mismatch -- a partial or
+        # silently-reshaped load would train a model that LOOKS warm-started
+        # but is actually running on wrong or randomly-reinitialized weights.
+        model.load_state_dict(source_state,strict=True)  # raises RuntimeError on any key/shape mismatch
+        warm_start_source = {'path':str(source_path),'sha256':hashlib.sha256(source_path.read_bytes()).hexdigest()}
+        print(f'Warm-started from {source_path} ({warm_start_source["sha256"][:12]})',flush=True)
     for head in (model.road_head,model.building_head,model.landuse_head):
         for param in head.parameters(): param.requires_grad_(False)
     optimizer = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad],lr=config['lr'])
@@ -130,7 +146,7 @@ def main():
         payload = dict(model=model.state_dict(),optimizer=optimizer.state_dict(),epoch=epoch+1,
                        best=best,history=history,config=config,manifest_sha256=signature,
                        architecture='MultiTaskNet',trained_heads=['sdf','log_var'],
-                       untrained_heads=['road','building','landuse'],
+                       untrained_heads=['road','building','landuse'],warm_start_source=warm_start_source,
                        limitations='Real NZ pilot only; other heads untrained; NOT ready for worker deployment or calibrated',
                        rng_state=torch.get_rng_state(),cuda_rng_state=torch.cuda.get_rng_state() if device.type=='cuda' else None)
         for name in (['best.pt','last.pt'] if improved else ['last.pt']):
