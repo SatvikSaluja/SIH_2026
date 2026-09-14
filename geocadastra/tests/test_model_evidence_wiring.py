@@ -63,28 +63,54 @@ def test_sdf_to_evidence_peaks_on_the_predicted_boundary():
     assert evidence[0, 1] > evidence[0, 2]
 
 
-def test_worker_defaults_to_simulation_and_records_which_source_ran(monkeypatch, ward):
+def _block_inputs(session, job, block_id):
+    """The arguments `_block_evidence` takes, from the store."""
+    from geoalchemy2.shape import to_shape
+    from geocadastra.core.crs import Geom
     from geocadastra.jobs import orchestrator as jobs
+    from geocadastra.store.schema import IngestedBlock
+
+    row = session.get(IngestedBlock, (job.id, block_id))
+    return (jobs._regenerate_ward(job.source, job.params),
+            Geom(to_shape(row.geom), job.crs), row.local_block_id)
+
+
+def test_worker_defaults_to_simulation_and_records_which_source_ran(committed_session, monkeypatch):
+    from geocadastra.jobs import orchestrator as jobs
+    from geocadastra.tests.test_review_regressions import ingest
+
     monkeypatch.delenv("GEOCADASTRA_MODEL_WEIGHTS", raising=False)
-    field, transform, provenance = jobs._block_evidence(ward, ward.blocks[0].id)
+    job, block_id, _ = ingest(committed_session)
+    regenerated, block_geom, local_id = _block_inputs(committed_session, job, block_id)
+    field, _, provenance = jobs._block_evidence(committed_session, job.id, block_geom, regenerated, local_id)
     assert provenance == {"evidence_source": "simulated"}
-    expected, _ = simulate_evidence_field(ward, ward.blocks[0].id)
+    expected, _ = simulate_evidence_field(regenerated, local_id)
     assert np.array_equal(field, expected)
 
 
-def test_worker_uses_configured_weights_and_stamps_their_hash(monkeypatch, tmp_path, ward):
+def test_worker_uses_configured_weights_and_stamps_their_hash(committed_session, monkeypatch, tmp_path):
     from geocadastra.jobs import orchestrator as jobs
-    model = MultiTaskNet()
+    from geocadastra.tests.test_review_regressions import ingest
+
+    job, block_id, _ = ingest(committed_session)
+    committed_session.commit()
     weights = tmp_path / "w.pt"
-    torch.save({"model_state": model.state_dict()}, weights)
+    torch.save({"model": MultiTaskNet().state_dict()}, weights)
     monkeypatch.setenv("GEOCADASTRA_MODEL_WEIGHTS", str(weights))
     jobs._load_model.cache_clear()
-    field, transform, provenance = jobs._block_evidence(ward, ward.blocks[0].id)
-    assert provenance["evidence_source"] == "model"
-    assert len(provenance["weights_sha256"]) == 16
-    simulated, _ = simulate_evidence_field(ward, ward.blocks[0].id)
-    assert not np.array_equal(field.shape, simulated.shape) or not np.allclose(field, simulated)
-    jobs._load_model.cache_clear()
+    try:
+        regenerated, block_geom, local_id = _block_inputs(committed_session, job, block_id)
+        field, _, provenance = jobs._block_evidence(
+            committed_session, job.id, block_geom, regenerated, local_id)
+        assert provenance["evidence_source"] == "model"
+        assert len(provenance["weights_sha256"]) == 16
+        # ingest stored the rasters, so the model must read them rather than
+        # depend on the ward being regenerable from its seed
+        assert provenance["pixels"] == "stored"
+        simulated, _ = simulate_evidence_field(regenerated, local_id)
+        assert field.shape != simulated.shape or not np.allclose(field, simulated)
+    finally:
+        jobs._load_model.cache_clear()
 
 
 def test_loader_accepts_a_checkpoint_train_py_actually_wrote(tmp_path, ward):

@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from geocadastra.core.crs import CRSMismatchError, Geom
 from geocadastra.core.fusion import DEFAULT_SIGMA_LEGACY_BY_STYLE, fuse_block
 from geocadastra.core.transport import assign_parcels, parcels_to_graph
+from geocadastra.store.rasters import has_ward_rasters, read_block_window, store_ward_rasters
 from geocadastra.core.capacity import refine_recorded_areas
 from geocadastra.store.changeset import allocate_ids, apply_fusion, load_block_graph, lock_block, seed_block_graph
 from geocadastra.store.constraints import parcel_area_report
@@ -164,6 +165,8 @@ def ingest_synthetic_ward(session: Session, ward, seed: int) -> WardJob:
                 source="synthetic_gt", purpose="evaluation" if held_out else "fusion",
             )
         )
+    store_ward_rasters(session, ward_job.id, ortho=ward.ortho, dsm=ward.dsm, dtm=ward.dtm,
+                       transform=ward.transform, crs=ward.crs)
     session.commit()
     return ward_job
 
@@ -206,7 +209,7 @@ def _load_model(weights_path: str):
     return model, hashlib.sha256(open(weights_path, "rb").read()).hexdigest()[:16]
 
 
-def _block_evidence(ward, local_block_id: int):
+def _block_evidence(session, ward_job_id: int, block_geom, ward, local_block_id: int):
     """Model prediction when weights are configured, simulation otherwise.
 
     Returns `(evidence_field, transform, provenance)`. The simulated field is
@@ -214,16 +217,26 @@ def _block_evidence(ward, local_block_id: int):
     reproducible, auditable result rather than silently no-op-ing -- but the
     provenance says which one ran, so a stored block can never be mistaken for
     a model result it did not come from.
+
+    On the model path the pixels come from the stored rasters when the ward
+    has them, reading only this block's window; `ward` is the regeneration
+    fallback for jobs ingested before rasters were stored. Simulation still
+    needs the regenerated ward, because it is derived from that ward's own
+    ground-truth edges rather than from pixels at all.
     """
     weights_path = os.environ.get("GEOCADASTRA_MODEL_WEIGHTS")
     if not weights_path:
         field, transform = simulate_evidence_field(ward, local_block_id)
         return field, transform, {"evidence_source": "simulated"}
-    from geocadastra.models.infer import block_evidence_from_model
+    from geocadastra.models.infer import block_evidence_from_model, evidence_from_rasters
     model, digest = _load_model(weights_path)
+    provenance = {"evidence_source": "model", "weights_sha256": digest, "weights_path": weights_path}
+    if has_ward_rasters(session, ward_job_id):
+        rgb, ndsm, transform = read_block_window(session, ward_job_id, block_geom.geom.bounds)
+        field, transform = evidence_from_rasters(model, rgb, ndsm, transform)
+        return field, transform, {**provenance, "pixels": "stored"}
     field, transform = block_evidence_from_model(model, ward, local_block_id)
-    return field, transform, {"evidence_source": "model", "weights_sha256": digest,
-                              "weights_path": weights_path}
+    return field, transform, {**provenance, "pixels": "regenerated"}
 
 
 @app.task(bind=True, max_retries=3, default_retry_delay=5)
@@ -279,7 +292,8 @@ def process_block(self, db_url: str, schema: str, ward_job_id: int, block_id: in
         # local_block_id, not the global block_id: the regenerated `ward` object
         # still numbers its own blocks from 0 (see IngestedBlock.local_block_id's
         # own docstring)
-        evidence_field, transform, evidence_provenance = _block_evidence(ward, block_row.local_block_id)
+        evidence_field, transform, evidence_provenance = _block_evidence(
+            session, ward_job_id, block_geom, ward, block_row.local_block_id)
 
         parcel_areas = [r.area for r in recorded]
         seed_points = [(to_shape(r.seed_point).x, to_shape(r.seed_point).y) for r in recorded]

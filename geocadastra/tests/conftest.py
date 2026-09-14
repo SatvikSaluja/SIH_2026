@@ -33,6 +33,24 @@ if _host not in ("localhost", "127.0.0.1", "::1"):
     )
 
 
+@pytest.fixture(autouse=True, scope="session")
+def _raster_root(tmp_path_factory):
+    """Ward imagery goes to disk, and a filesystem does not roll back with
+    the test transaction. Point every test at a throwaway root so the suite
+    leaves nothing behind -- the same guarantee the schema fixture makes for
+    the database. Without this, every ingesting test writes GeoTIFFs into
+    `rasters/` in the working directory.
+    """
+    root = tmp_path_factory.mktemp("rasters")
+    previous = os.environ.get("GEOCADASTRA_RASTER_ROOT")
+    os.environ["GEOCADASTRA_RASTER_ROOT"] = str(root)
+    yield root
+    if previous is None:
+        os.environ.pop("GEOCADASTRA_RASTER_ROOT", None)
+    else:
+        os.environ["GEOCADASTRA_RASTER_ROOT"] = previous
+
+
 @pytest.fixture(scope="session")
 def db_engine():
     engine = create_engine(

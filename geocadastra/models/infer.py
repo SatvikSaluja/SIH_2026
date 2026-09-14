@@ -14,6 +14,7 @@ import numpy as np
 import torch
 from affine import Affine
 
+from geocadastra.core.window import pixel_window
 from geocadastra.models.backbone import MultiTaskNet
 
 EVIDENCE_DECAY = 1.5  # metres; matches synth.generator.simulate_evidence_field's default, so
@@ -105,27 +106,35 @@ def run_tiled_inference(
     return result
 
 
-def block_evidence_from_model(model, ward, block_id: int, *, tile_size: int = 64, overlap: int = 16):
-    """Real model evidence for one block, with `simulate_evidence_field`'s contract.
+def evidence_from_rasters(model, rgb, ndsm, transform, *, tile_size: int = 64, overlap: int = 16):
+    """`(evidence_field, transform)` from pixels already on their final grid.
 
-    Returns `(evidence_field, transform)` on the ward raster's own grid,
-    cropped to the block's bounds -- NOT resampled to a fixed gsd. Stage 3
-    consumes an (array, transform) pair, so the grid the pixels actually live
-    on is the one that must be reported; a transform that disagrees with its
-    array silently places every parcel in the wrong part of the block.
+    `rgb` is (3, h, w) in [0, 1], `ndsm` is (h, w) in metres, and `transform`
+    is that array's own georeferencing -- returned unchanged, because Stage 3
+    consumes an (array, transform) pair and a transform that disagrees with
+    its array puts every parcel in the wrong part of the block.
     """
-    minx, miny, maxx, maxy = next(b for b in ward.blocks if b.id == block_id).polygon.bounds
-    inverse = ~ward.transform
+    evidence = run_tiled_inference(model, rgb, ndsm, tile_size=tile_size, overlap=overlap)["evidence"]
+    return evidence, transform
+
+
+def crop_ward_block(ward, block_id: int):
+    """`(rgb, ndsm, transform)` for one block of an in-memory synthetic ward.
+
+    The stored-raster path reads the same window off disk instead; this one
+    exists for wards that are regenerated rather than stored.
+    """
+    bounds = next(b for b in ward.blocks if b.id == block_id).polygon.bounds
     height, width = ward.dtm.shape
-    cols, rows = zip(*(inverse * (x, y) for x in (minx, maxx) for y in (miny, maxy)))
-    # Half-open window, clamped to the raster, and never empty: a block at the
-    # ward's edge can round to a zero-width window otherwise.
-    col0 = min(max(int(np.floor(min(cols))), 0), width - 1)
-    row0 = min(max(int(np.floor(min(rows))), 0), height - 1)
-    col1 = min(max(int(np.ceil(max(cols))), col0 + 1), width)
-    row1 = min(max(int(np.ceil(max(rows))), row0 + 1), height)
+    row0, row1, col0, col1 = pixel_window(ward.transform, height, width, bounds)
 
     rgb = ward.ortho[row0:row1, col0:col1].astype(np.float32).transpose(2, 0, 1) / 255.0
     ndsm = (ward.dsm - ward.dtm)[row0:row1, col0:col1].astype(np.float32)
-    evidence = run_tiled_inference(model, rgb, ndsm, tile_size=tile_size, overlap=overlap)["evidence"]
-    return evidence, ward.transform * Affine.translation(col0, row0)
+    return rgb, ndsm, ward.transform * Affine.translation(col0, row0)
+
+
+def block_evidence_from_model(model, ward, block_id: int, *, tile_size: int = 64, overlap: int = 16):
+    """Model evidence for one block of an in-memory ward, with
+    `simulate_evidence_field`'s `(evidence_field, transform)` contract."""
+    rgb, ndsm, transform = crop_ward_block(ward, block_id)
+    return evidence_from_rasters(model, rgb, ndsm, transform, tile_size=tile_size, overlap=overlap)

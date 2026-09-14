@@ -192,6 +192,42 @@ class IngestedBlock(Base):
     geom: Mapped[object] = mapped_column(Geometry(geometry_type="POLYGON", srid=SRID))
 
 
+class WardRaster(Base):
+    """Where one ward's imagery actually lives, so processing never depends
+    on regenerating it.
+
+    `process_block` reconstructed its rasters by re-running the synthetic
+    generator from a seed. That works only for synthetic wards, and only
+    when the stored params match exactly (see `_regenerate_ward`'s own
+    docstring -- mismatched params silently produce a raster window that
+    does not even overlap the block). Real imagery has no seed to
+    regenerate from, so it has to be stored.
+
+    Pixels live on disk as GeoTIFF, not in a bytea column: an ortho is
+    large, and rasterio reading a windowed GeoTIFF is the normal way to
+    pull one block's pixels out of a ward-sized image. The row carries
+    the georeferencing so a reader never has to trust a filename.
+
+    `path` is always server-derived from `ward_job_id` and `kind` -- never
+    a caller-supplied string, so there is no traversal to sanitise.
+    """
+
+    __tablename__ = "ward_rasters"
+
+    ward_job_id: Mapped[int] = mapped_column(ForeignKey("ward_jobs.id"), primary_key=True)
+    kind: Mapped[str] = mapped_column(String, primary_key=True)  # ortho | dsm | dtm
+    path: Mapped[str] = mapped_column(Text)
+    width: Mapped[int] = mapped_column(Integer)
+    height: Mapped[int] = mapped_column(Integer)
+    # affine coefficients (a, b, c, d, e, f), the same order Affine itself uses
+    transform: Mapped[dict] = mapped_column(JSONB)
+    crs: Mapped[str] = mapped_column(String)
+
+    __table_args__ = (
+        CheckConstraint("kind IN ('ortho', 'dsm', 'dtm')", name="ck_ward_raster_kind"),
+    )
+
+
 class RecordedParcel(Base):
     """One ingested recorded-area parcel (Stage 3's capacity constraint
     input) -- the department's known area/style for a plot, independent of
