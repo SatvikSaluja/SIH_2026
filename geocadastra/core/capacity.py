@@ -17,6 +17,26 @@ from geocadastra.core.graph import Node
 from geocadastra.core.planarize import GRID
 
 
+def _feasible_targets(target, tolerance, total):
+    """Closest point to the recorded areas whose total matches the block.
+
+    A recorded tolerance is a permitted interval, not a post-hoc check. Solving
+    for exact recorded areas rejects allocations the record itself allows
+    whenever the recorded total does not equal the block area.
+    """
+    deficit = total - target.sum()
+    if abs(deficit) <= 1e-12:
+        return target
+    lo, hi = -tolerance.max(), tolerance.max()
+    for _ in range(100):  # sum(clip(lam)) is nondecreasing in lam
+        mid = (lo + hi) / 2
+        if np.clip(mid, -tolerance, tolerance).sum() < deficit:
+            lo = mid
+        else:
+            hi = mid
+    return target + np.clip((lo + hi) / 2, -tolerance, tolerance)
+
+
 @dataclass
 class CapacityResult:
     graph: object
@@ -111,11 +131,15 @@ def refine_recorded_areas(graph, block, areas, tolerances, *, node_weights=None,
                 offset+=1
             work.nodes[nid]=Node(nid,float(x),float(y))
 
+    # Spend the recorded tolerance before the solve, not after it.
+    solve_target=_feasible_targets(target,tolerance,block.area)
+
     def residual(values):
         apply(values)
-        # Total domain area is fixed by its ring; the last equality is
-        # redundant. It is still checked independently after snapping.
-        return ((parcel_areas()-target)/np.maximum(target,1.))[:-1]
+        # solve_target sums to the block area, so the domain ring makes the
+        # last equality genuinely redundant. Every parcel is still checked
+        # against its own recorded area and tolerance after snapping.
+        return ((parcel_areas()-solve_target)/np.maximum(solve_target,1.))[:-1]
 
     constraints=[] if len(ids)==1 else [{"type":"eq","fun":residual}]
     result=minimize(lambda x:float(np.sum(weights*(x-x0)**2)),x0,

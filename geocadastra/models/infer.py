@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import numpy as np
 import torch
+from affine import Affine
 
 from geocadastra.models.backbone import MultiTaskNet
 
@@ -102,3 +103,29 @@ def run_tiled_inference(
     result["landuse"] = (accum_landuse / weight_sum[None]).astype(np.float32)
     result["evidence"] = sdf_to_evidence(result["sdf"])
     return result
+
+
+def block_evidence_from_model(model, ward, block_id: int, *, tile_size: int = 64, overlap: int = 16):
+    """Real model evidence for one block, with `simulate_evidence_field`'s contract.
+
+    Returns `(evidence_field, transform)` on the ward raster's own grid,
+    cropped to the block's bounds -- NOT resampled to a fixed gsd. Stage 3
+    consumes an (array, transform) pair, so the grid the pixels actually live
+    on is the one that must be reported; a transform that disagrees with its
+    array silently places every parcel in the wrong part of the block.
+    """
+    minx, miny, maxx, maxy = next(b for b in ward.blocks if b.id == block_id).polygon.bounds
+    inverse = ~ward.transform
+    height, width = ward.dtm.shape
+    cols, rows = zip(*(inverse * (x, y) for x in (minx, maxx) for y in (miny, maxy)))
+    # Half-open window, clamped to the raster, and never empty: a block at the
+    # ward's edge can round to a zero-width window otherwise.
+    col0 = min(max(int(np.floor(min(cols))), 0), width - 1)
+    row0 = min(max(int(np.floor(min(rows))), 0), height - 1)
+    col1 = min(max(int(np.ceil(max(cols))), col0 + 1), width)
+    row1 = min(max(int(np.ceil(max(rows))), row0 + 1), height)
+
+    rgb = ward.ortho[row0:row1, col0:col1].astype(np.float32).transpose(2, 0, 1) / 255.0
+    ndsm = (ward.dsm - ward.dtm)[row0:row1, col0:col1].astype(np.float32)
+    evidence = run_tiled_inference(model, rgb, ndsm, tile_size=tile_size, overlap=overlap)["evidence"]
+    return evidence, ward.transform * Affine.translation(col0, row0)

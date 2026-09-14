@@ -1,11 +1,14 @@
 """Synthetic ward orchestration: one atomic, resumable transaction per block.
 
-Workers regenerate only simulated raster evidence; vector facts come from
-storage. Completion means geometry processing completed, not certification.
+Workers regenerate raster evidence -- from the model when
+GEOCADASTRA_MODEL_WEIGHTS is set, simulated otherwise, with the stored
+provenance naming which -- while vector facts come from storage. Completion
+means geometry processing completed, not certification.
 """
 from __future__ import annotations
 
 import dataclasses
+import functools
 import hashlib
 import os
 
@@ -182,6 +185,47 @@ def _regenerate_ward(source: str, params: dict):
     return generate_ward(params=WardParams(**{"generator_version": 1, **params}), seed=seed)
 
 
+@functools.lru_cache(maxsize=2)
+def _load_model(weights_path: str):
+    """Load once per worker process, not once per block.
+
+    `train.py` writes its state under "model" and stores no architecture in
+    the checkpoint -- it always builds the default net -- so this rebuilds the
+    same default. `load_state_dict` stays strict on purpose: an architecture
+    that has moved on since the checkpoint was written must raise here, not
+    quietly run a differently-shaped network over real parcels.
+    """
+    import torch
+    from geocadastra.models.backbone import MultiTaskNet
+    from geocadastra.models.train import N_LANDUSE_CLASSES
+    checkpoint = torch.load(weights_path, map_location="cpu", weights_only=True)
+    state = checkpoint.get("model", checkpoint.get("model_state", checkpoint))
+    model = MultiTaskNet(n_landuse_classes=N_LANDUSE_CLASSES)
+    model.load_state_dict(state)
+    model.eval()
+    return model, hashlib.sha256(open(weights_path, "rb").read()).hexdigest()[:16]
+
+
+def _block_evidence(ward, local_block_id: int):
+    """Model prediction when weights are configured, simulation otherwise.
+
+    Returns `(evidence_field, transform, provenance)`. The simulated field is
+    the default so that a worker without configured weights keeps producing a
+    reproducible, auditable result rather than silently no-op-ing -- but the
+    provenance says which one ran, so a stored block can never be mistaken for
+    a model result it did not come from.
+    """
+    weights_path = os.environ.get("GEOCADASTRA_MODEL_WEIGHTS")
+    if not weights_path:
+        field, transform = simulate_evidence_field(ward, local_block_id)
+        return field, transform, {"evidence_source": "simulated"}
+    from geocadastra.models.infer import block_evidence_from_model
+    model, digest = _load_model(weights_path)
+    field, transform = block_evidence_from_model(model, ward, local_block_id)
+    return field, transform, {"evidence_source": "model", "weights_sha256": digest,
+                              "weights_path": weights_path}
+
+
 @app.task(bind=True, max_retries=3, default_retry_delay=5)
 def process_block(self, db_url: str, schema: str, ward_job_id: int, block_id: int, ward_source: str, ward_params: dict) -> str:
     """Publish one complete block atomically; serialize duplicate deliveries.
@@ -235,7 +279,7 @@ def process_block(self, db_url: str, schema: str, ward_job_id: int, block_id: in
         # local_block_id, not the global block_id: the regenerated `ward` object
         # still numbers its own blocks from 0 (see IngestedBlock.local_block_id's
         # own docstring)
-        evidence_field, transform = simulate_evidence_field(ward, block_row.local_block_id)
+        evidence_field, transform, evidence_provenance = _block_evidence(ward, block_row.local_block_id)
 
         parcel_areas = [r.area for r in recorded]
         seed_points = [(to_shape(r.seed_point).x, to_shape(r.seed_point).y) for r in recorded]
@@ -274,6 +318,7 @@ def process_block(self, db_url: str, schema: str, ward_job_id: int, block_id: in
                 ))
             seed = seed_block_graph(session, block_id, fresh_graph, author="orchestrator", description="ingest: parcel assignment",
                 evidence={"method": "capacity_constrained_transport", "ward_job_id": ward_job_id,
+                          **evidence_provenance,
                           "area_refinement": refinement.detail,
                           "recorded_parcel_ids": parcel_ids, "source": ward_source, "n_segments": n_segments,
                           "assignment_conflicts": [dataclasses.asdict(c) for c in result.conflicts]})

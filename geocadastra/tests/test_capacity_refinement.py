@@ -72,3 +72,42 @@ def test_three_record_capacities_are_solved_together():
     assert result.converged,result.detail
     for fid,g in result.graph.faces_to_polygons().items():
         assert abs(g.area-targets[result.graph.face_parcel_ids[fid]])<=.01
+
+
+def _graph(start):
+    block=Geom(box(0,0,10,10),CRS)
+    return block,parcels_to_graph({p:Geom(box(*b),CRS) for p,b in start.items()},block)
+
+
+UNEVEN={1:(0,0,2,10),2:(2,0,4,10),3:(4,0,10,10)}
+
+
+def test_tolerance_is_spent_before_the_solve_not_only_checked_after():
+    """A recorded total the block cannot hold exactly is still satisfiable.
+
+    34/34/34 sums to 102 in a 100 m2 block, but +/-1 each admits 33.33 each.
+    Solving for exact recorded areas refused this; the tolerance interval is
+    what the record actually permits.
+    """
+    block,graph=_graph(UNEVEN)
+    result=refine_recorded_areas(graph,block,{1:34.,2:34.,3:34.},{1:1.,2:1.,3:1.})
+    assert result.converged,result.detail
+    for fid,polygon in result.graph.faces_to_polygons().items():
+        assert abs(polygon.area-34.)<=1.
+    assert result.graph.face_parcel_ids==graph.face_parcel_ids
+
+
+def test_slack_goes_to_the_parcel_whose_record_permits_it():
+    block,graph=_graph(UNEVEN)
+    result=refine_recorded_areas(graph,block,{1:34.,2:34.,3:34.},{1:.001,2:.001,3:3.})
+    assert result.converged,result.detail
+    areas={result.graph.face_parcel_ids[fid]:g.area for fid,g in result.graph.faces_to_polygons().items()}
+    assert abs(areas[1]-34.)<=.001 and abs(areas[2]-34.)<=.001
+    assert abs(areas[3]-32.)<=.01  # absorbs the whole 2 m2 deficit
+
+
+def test_total_outside_every_tolerance_is_still_refused():
+    block,graph=_graph(UNEVEN)
+    result=refine_recorded_areas(graph,block,{1:50.,2:50.,3:50.},{1:1.,2:1.,3:1.})
+    assert not result.converged
+    assert result.detail["reason"]=="infeasible_recorded_total"
