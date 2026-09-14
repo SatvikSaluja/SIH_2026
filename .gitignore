@@ -22,3 +22,7 @@ artifacts/nz_100_png_metadata.zip
 
 .local_rasters/
 .local_redis/
+
+data/nz_multitask_real/
+artifacts/nz_multitask_real.zip
+data/svamitva/
