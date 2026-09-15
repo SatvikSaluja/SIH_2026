@@ -12,6 +12,26 @@ from torch.utils.data import Dataset, DataLoader
 from geocadastra.models.backbone import MultiTaskNet
 
 
+def weighted_nll_terms(out, target, valid, boundary_weight=15.0, decay=1.5):
+    """(per_pixel_loss, weight) tensors -- the raw terms, not yet reduced.
+
+    Split out from masked_loss() specifically so evaluate() can accumulate
+    a true GLOBAL weighted mean across an entire epoch (sum of per_pixel*
+    weight, sum of weight, divide once at the end) instead of averaging
+    each batch's own ratio and reweighting by raw pixel count -- those are
+    not the same number whenever batches differ in average weight-per-pixel,
+    which they do here (some patches are boundary-dense, most are not).
+    Confirmed as a real discrepancy, not a theoretical one: the same fixed
+    pixels, grouped as one batch vs. two, reported 12.68 vs 50.16 for what
+    was supposed to be the same "loss" (see PR notes) -- a 4x difference
+    with zero change to the model or the data.
+    """
+    precision = torch.exp(-out['log_var'])
+    per_pixel = 0.5 * precision * (out['sdf'] - target) ** 2 + 0.5 * out['log_var']
+    weight = valid * (1.0 + boundary_weight * torch.exp(-target.clamp(min=0) / decay))
+    return per_pixel, weight
+
+
 def masked_loss(out, target, valid, boundary_weight=15.0, decay=1.5):
     """Heteroscedastic NLL (same math as sdf_nll_loss), but weighted toward
     near-boundary pixels.
@@ -20,11 +40,9 @@ def masked_loss(out, target, valid, boundary_weight=15.0, decay=1.5):
     correct for the production model, but insufficient here: ~95% of real
     pixels are far from any boundary, so an unweighted mean lets "predict
     roughly the average distance everywhere" become the cheapest solution.
-    Confirmed, not assumed: two full training runs (cold-start and
-    warm-started+5x data) both converged to exactly that -- predicted SDF
-    never dropped below ~1.1m anywhere in 425k validation pixels, and F1
-    was 0.0 at every epoch of both runs. More data alone did not change
-    this; the loss shape does not reward finding the sparse boundary class.
+    That mechanism is confirmed independently of this loss (see the F1
+    section below); this weighting is this project's attempt at a fix,
+    not itself proof the fix worked.
 
     The weight decays smoothly with true distance (same exp(-d/decay) shape
     as geocadastra.models.infer.sdf_to_evidence, reused deliberately for a
@@ -32,10 +50,14 @@ def masked_loss(out, target, valid, boundary_weight=15.0, decay=1.5):
     project) rather than a hard threshold, so the model isn't abruptly
     blind to the bulk regression signal -- every valid pixel keeps weight
     >= its own validity, boundary pixels get up to (1+boundary_weight)x.
+
+    This per-batch ratio is correct to train on (each batch's own gradient
+    only ever needs its own batch's mean). It is NOT safe to accumulate
+    across batches by multiplying by pixel count and re-averaging -- see
+    weighted_nll_terms()'s docstring; evaluate() does the accumulation
+    that way for that exact reason.
     """
-    precision = torch.exp(-out['log_var'])
-    per_pixel = 0.5 * precision * (out['sdf'] - target) ** 2 + 0.5 * out['log_var']
-    weight = valid * (1.0 + boundary_weight * torch.exp(-target.clamp(min=0) / decay))
+    per_pixel, weight = weighted_nll_terms(out, target, valid, boundary_weight, decay)
     return (per_pixel * weight).sum() / weight.sum().clamp(min=1.0)
 
 
@@ -75,19 +97,25 @@ class Patches(Dataset):
 @torch.no_grad()
 def evaluate(model, loader, device):
     model.eval()
-    total = pixels = tp = fp = fn = absolute = 0.
+    weighted_sum = weight_total = pixels = tp = fp = fn = absolute = 0.
     for batch in loader:
         rgb, height, target, valid = [x.to(device) for x in batch]
         out = model(rgb,height)
         n = valid.sum().item()
-        total += masked_loss(out,target,valid).item()*n
+        per_pixel, weight = weighted_nll_terms(out, target, valid)
+        # Accumulate the RAW sums and divide once at the end -- a true
+        # global weighted mean over every pixel in the split, not a
+        # per-batch ratio re-averaged by raw pixel count (which depends on
+        # batch_size for the same underlying pixels; see weighted_nll_terms).
+        weighted_sum += (per_pixel * weight).sum().item()
+        weight_total += weight.sum().item()
         absolute += ((out['sdf']-target).abs()*valid).sum().item()
         pixels += n
         pred, truth, mask = out['sdf'].abs() <= .3, target <= .3, valid.bool()
         tp += (pred & truth & mask).sum().item()
         fp += (pred & ~truth & mask).sum().item()
         fn += (~pred & truth & mask).sum().item()
-    return dict(loss=total/pixels, distance_mae_m=absolute/pixels,
+    return dict(loss=weighted_sum/max(weight_total,1.), distance_mae_m=absolute/pixels,
                 precision=tp/max(tp+fp,1), recall=tp/max(tp+fn,1),
                 f1=2*tp/max(2*tp+fp+fn,1), valid_pixels=int(pixels),
                 definition='Pixel overlap within 0.3 m of rasterized parcel reference; not survey accuracy')

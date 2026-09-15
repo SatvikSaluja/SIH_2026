@@ -230,3 +230,52 @@ def test_warm_start_and_resume_are_mutually_exclusive(tmp_path):
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
     assert result.returncode != 0
     assert "mutually exclusive" in result.stderr
+
+
+def test_evaluate_loss_is_independent_of_how_patches_are_batched():
+    """Regression: evaluate() used to average each batch's own weighted
+    ratio and reweight by raw pixel count, which is NOT the same as a
+    global weighted mean whenever batches differ in average weight-per-
+    pixel -- confirmed directly: the same fixed pixels, grouped as one
+    batch vs. two, reported 12.68 vs 50.16 for supposedly the same loss.
+    The fix accumulates raw sums and divides once; this test constructs
+    the same kind of imbalanced grouping and checks the numbers now agree.
+    """
+    torch.manual_seed(0)
+
+    def make_patch(near_boundary_frac, n=100):
+        target = torch.where(torch.rand(1, 1, 1, n) < near_boundary_frac,
+                             torch.zeros(1, 1, 1, n), torch.full((1, 1, 1, n), 20.0))
+        out = {"sdf": torch.zeros(1, 1, 1, n), "log_var": torch.zeros(1, 1, 1, n)}
+        return out, target, torch.ones(1, 1, 1, n)
+
+    dense_out, dense_target, dense_valid = make_patch(0.9)
+    sparse_out, sparse_target, sparse_valid = make_patch(0.05)
+
+    class TwoBatchLoader:
+        """Same pixels as OneBatchLoader, but as two separate batches."""
+        def __iter__(self):
+            yield dense_out["sdf"], torch.zeros(1, 1, 1, 100), dense_target, dense_valid
+            yield sparse_out["sdf"], torch.zeros(1, 1, 1, 100), sparse_target, sparse_valid
+
+    class OneBatchLoader:
+        def __iter__(self):
+            sdf = torch.cat([dense_out["sdf"], sparse_out["sdf"]], dim=-1)
+            target = torch.cat([dense_target, sparse_target], dim=-1)
+            valid = torch.cat([dense_valid, sparse_valid], dim=-1)
+            yield sdf, torch.zeros(1, 1, 1, 200), target, valid
+
+    class IdentityModel:
+        def eval(self): pass
+        def __call__(self, rgb, height):
+            return {"sdf": rgb, "log_var": torch.zeros_like(rgb)}
+
+    device = torch.device("cpu")
+    two_batch = module.evaluate(IdentityModel(), TwoBatchLoader(), device)
+    one_batch = module.evaluate(IdentityModel(), OneBatchLoader(), device)
+    assert two_batch["loss"] == pytest.approx(one_batch["loss"], rel=1e-6), (
+        f"loss depends on batching: {two_batch['loss']} vs {one_batch['loss']}")
+    # distance_mae_m and F1 were already batch-independent (plain sums) --
+    # confirm the fix didn't regress those.
+    assert two_batch["distance_mae_m"] == pytest.approx(one_batch["distance_mae_m"])
+    assert two_batch["f1"] == pytest.approx(one_batch["f1"])
