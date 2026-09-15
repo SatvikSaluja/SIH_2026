@@ -117,7 +117,13 @@ def test_build_snapshot_actually_copies_files_and_uses_patches_field_names(tmp_p
 
     source = tmp_path / 'source'
     entry = _write_new_schema_tile(source, 'TILE_A')
-    (source / 'manifest.json').write_text(json.dumps({'tiles': [entry]}))
+    # build_snapshot.py now refuses to write a snapshot missing val/test
+    # entirely (see test_build_snapshot.py) -- a real one always has both,
+    # so this fixture needs them too even though this test only asserts
+    # on TILE_A.
+    val_entry = _write_new_schema_tile(source, 'TILE_VAL', split='val')
+    test_entry = _write_new_schema_tile(source, 'TILE_TEST', split='test')
+    (source / 'manifest.json').write_text(json.dumps({'tiles': [entry, val_entry, test_entry]}))
 
     out = tmp_path / 'snapshot'
     import sys

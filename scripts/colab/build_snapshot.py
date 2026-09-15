@@ -147,6 +147,19 @@ def main():
     if separation_violations or id_overlap:
         print("SPLIT INTEGRITY PROBLEM -- see manifest for detail")
 
+    # A snapshot missing val or test entirely still writes a manifest and
+    # exits 0 -- Patches(root,'val')/'test' then silently iterate zero
+    # tiles rather than erroring, so training would either crash deep in
+    # evaluate() (division by zero) or, worse, "succeed" with meaningless
+    # validation metrics. Confirmed concretely: a real run of this script
+    # produced exactly this (all val/test carryover tiles had the old,
+    # incompatible schema and were correctly dropped, leaving zero of
+    # either split) and exited 0 anyway.
+    missing = [s for s in ('val', 'test') if split_counts.get(s, 0) == 0]
+    if missing:
+        raise ValueError(f"Snapshot has zero tiles in split(s) {missing} -- unusable for training/evaluation. "
+                         f"Split counts: {dict(split_counts)}. Check `dropped` in {out / 'manifest.json'}.")
+
 
 if __name__ == '__main__':
     main()

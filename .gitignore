@@ -5,15 +5,9 @@ __pycache__/
 *.egg-info/
 .DS_Store
 
-data/nz_pilot/
 artifacts/nz_colab_bundle.zip
 runs/
 
-data/nz_christchurch_all/
-
-data/nz_png_preview/
-
-data/nz_height_100/
 artifacts/nz_height_100.zip
 
 artifacts/stage4_gpu_bundle.zip
@@ -23,11 +17,16 @@ artifacts/nz_100_png_metadata.zip
 .local_rasters/
 .local_redis/
 
-data/nz_multitask_real/
 artifacts/nz_multitask_real.zip
-data/svamitva/
 
 benchmark_result.json
 proxy_project/
 
 .local_workspace/
+
+# Every real-imagery dataset pool/snapshot lands here (nz_pilot, nz_pilot_v2,
+# nz_pilot_v3, ...) -- individually listing each one by name is exactly how
+# nz_pilot_v3/nz_pilot_snapshot_v3 (12-58GB) ended up untracked-but-not-
+# ignored (data/ showed as one untracked dir in `git status`, one `git add .`
+# away from committing tens of GB). One rule covers every future pool too.
+data/
