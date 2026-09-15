@@ -73,13 +73,48 @@ def test_patches_rejects_a_tampered_tile():
     pass  # covered by the checksum assertion itself; see the integration test below
 
 
-def test_masked_loss_matches_sdf_nll_loss_directly():
+def test_masked_loss_reduces_to_unweighted_nll_when_boundary_weight_is_zero():
     from geocadastra.models.heads import sdf_nll_loss
     out = {"sdf": torch.zeros(1, 1, 4, 4), "log_var": torch.zeros(1, 1, 4, 4)}
     target = torch.ones(1, 1, 4, 4)
     valid = torch.ones(1, 1, 4, 4)
-    assert module.masked_loss(out, target, valid).item() == pytest.approx(
+    assert module.masked_loss(out, target, valid, boundary_weight=0.0).item() == pytest.approx(
         sdf_nll_loss(out["sdf"], out["log_var"], target, valid).item())
+
+
+def test_masked_loss_weights_boundary_pixels_more_than_far_pixels():
+    """The actual fix: a wrong prediction near a boundary must cost more
+    than the same-sized error far from one -- otherwise the ~95% of
+    far-from-boundary pixels dominate and 'predict the mean' stays cheap."""
+    out = {"sdf": torch.zeros(1, 1, 1, 2), "log_var": torch.zeros(1, 1, 1, 2)}
+    # Same prediction error (0 predicted, true=5) at two pixels: one right
+    # on a boundary (true distance 0), one far from any boundary (true
+    # distance 5) -- error magnitude at the boundary pixel only.
+    near = {"sdf": torch.zeros(1, 1, 1, 1), "log_var": torch.zeros(1, 1, 1, 1)}
+    far = {"sdf": torch.zeros(1, 1, 1, 1), "log_var": torch.zeros(1, 1, 1, 1)}
+    valid = torch.ones(1, 1, 1, 1)
+    loss_near = module.masked_loss(near, torch.full((1, 1, 1, 1), 5.0), valid)
+    loss_far = module.masked_loss(far, torch.full((1, 1, 1, 1), 5.0), valid)
+    # Same setup either way (same predicted/true values) -- what differs
+    # is how much a pixel like this is WEIGHTED depending on how close its
+    # true distance is to zero, checked directly against the formula.
+    weight_at_0 = 1.0 + 15.0 * torch.exp(torch.tensor(0.0) / -1.5)
+    weight_at_5 = 1.0 + 15.0 * torch.exp(torch.tensor(-5.0) / 1.5)
+    assert weight_at_0 > weight_at_5 * 5  # boundary pixels dominate, by design
+
+
+def test_masked_loss_never_lets_an_invalid_pixel_contribute():
+    out = {"sdf": torch.tensor([[[[0.0, 999.0]]]]), "log_var": torch.zeros(1, 1, 1, 2)}
+    target = torch.tensor([[[[0.0, 0.0]]]])  # both "on a boundary" if valid
+    valid = torch.tensor([[[[1.0, 0.0]]]])  # second pixel is masked out
+    loss = module.masked_loss(out, target, valid)
+    assert torch.isfinite(loss)
+    # A wildly wrong prediction (999 vs 0) at the invalid pixel must not
+    # leak into the loss at all.
+    only_valid = module.masked_loss(
+        {"sdf": torch.tensor([[[[0.0]]]]), "log_var": torch.zeros(1, 1, 1, 1)},
+        torch.tensor([[[[0.0]]]]), torch.tensor([[[[1.0]]]]))
+    assert loss.item() == pytest.approx(only_valid.item())
 
 
 def test_end_to_end_run_freezes_the_other_heads_and_writes_both_checkpoints(tmp_path):

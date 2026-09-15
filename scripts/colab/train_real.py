@@ -10,12 +10,33 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader
 from geocadastra.models.backbone import MultiTaskNet
-from geocadastra.models.heads import sdf_nll_loss
 
 
-def masked_loss(out, target, valid):
-    # Match the production head's Gaussian NLL; missing tasks contribute no loss.
-    return sdf_nll_loss(out['sdf'], out['log_var'], target, valid)
+def masked_loss(out, target, valid, boundary_weight=15.0, decay=1.5):
+    """Heteroscedastic NLL (same math as sdf_nll_loss), but weighted toward
+    near-boundary pixels.
+
+    sdf_nll_loss's own mask is binary (in/out of the labelled region) --
+    correct for the production model, but insufficient here: ~95% of real
+    pixels are far from any boundary, so an unweighted mean lets "predict
+    roughly the average distance everywhere" become the cheapest solution.
+    Confirmed, not assumed: two full training runs (cold-start and
+    warm-started+5x data) both converged to exactly that -- predicted SDF
+    never dropped below ~1.1m anywhere in 425k validation pixels, and F1
+    was 0.0 at every epoch of both runs. More data alone did not change
+    this; the loss shape does not reward finding the sparse boundary class.
+
+    The weight decays smoothly with true distance (same exp(-d/decay) shape
+    as geocadastra.models.infer.sdf_to_evidence, reused deliberately for a
+    consistent "how much does this pixel matter" convention across the
+    project) rather than a hard threshold, so the model isn't abruptly
+    blind to the bulk regression signal -- every valid pixel keeps weight
+    >= its own validity, boundary pixels get up to (1+boundary_weight)x.
+    """
+    precision = torch.exp(-out['log_var'])
+    per_pixel = 0.5 * precision * (out['sdf'] - target) ** 2 + 0.5 * out['log_var']
+    weight = valid * (1.0 + boundary_weight * torch.exp(-target.clamp(min=0) / decay))
+    return (per_pixel * weight).sum() / weight.sum().clamp(min=1.0)
 
 
 class Patches(Dataset):
@@ -110,6 +131,12 @@ def main():
     for head in (model.road_head,model.building_head,model.landuse_head):
         for param in head.parameters(): param.requires_grad_(False)
     optimizer = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad],lr=config['lr'])
+    # A flat LR produced real instability late in training (epoch 24 of the
+    # first expanded run: val loss spiked from ~2.6 to 3.5, MAE from ~6.4m
+    # to 10.5m) -- the synthetic trainer already fixed the identical
+    # symptom this same way; T_max=a.epochs so a --resume with a longer
+    # --epochs value still anneals to the NEW final epoch, not the old one.
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer,T_max=a.epochs,eta_min=config['lr']*0.01)
     history, best, start = [], float('inf'), 0
     if a.resume or a.evaluate:
         saved = torch.load(outdir/('best.pt' if a.evaluate else 'last.pt'),map_location=device,weights_only=True)
@@ -117,6 +144,7 @@ def main():
             raise ValueError('Data/config differs from checkpoint')
         model.load_state_dict(saved['model'])
         optimizer.load_state_dict(saved['optimizer'])
+        if 'scheduler' in saved: scheduler.load_state_dict(saved['scheduler'])
         history,best,start = saved['history'],saved['best'],saved['epoch']
         torch.set_rng_state(saved['rng_state'].cpu())
         if device.type=='cuda' and saved['cuda_rng_state'] is not None:
@@ -138,12 +166,13 @@ def main():
             loss = masked_loss(model(rgb,height),target,valid)
             if not torch.isfinite(loss): raise ValueError('Nonfinite training loss')
             loss.backward(); optimizer.step(); total += loss.item()*len(rgb)
+        scheduler.step()
         metrics = evaluate(model,val,device)
         if not np.isfinite(metrics['loss']): raise ValueError('Nonfinite validation loss')
         improved = metrics['loss'] < best
         best = min(best,metrics['loss'])
         history.append(dict(epoch=epoch+1,train_loss=total/len(train.dataset),validation=metrics,seconds=time.monotonic()-began))
-        payload = dict(model=model.state_dict(),optimizer=optimizer.state_dict(),epoch=epoch+1,
+        payload = dict(model=model.state_dict(),optimizer=optimizer.state_dict(),scheduler=scheduler.state_dict(),epoch=epoch+1,
                        best=best,history=history,config=config,manifest_sha256=signature,
                        architecture='MultiTaskNet',trained_heads=['sdf','log_var'],
                        untrained_heads=['road','building','landuse'],warm_start_source=warm_start_source,
