@@ -88,3 +88,55 @@ def test_schema_compatible_carryover_is_kept(tmp_path, monkeypatch):
     manifest = json.loads((tmp_path / 'out' / 'manifest.json').read_text())
     assert [t['tile'] for t in manifest['tiles']] == ['GOOD_TILE']
     assert manifest['dropped_incompatible_carryover'] == []
+
+
+def _write_new_schema_tile(root: Path, tile: str, split: str = 'train'):
+    folder = root / tile
+    folder.mkdir(parents=True)
+    np.savez_compressed(folder / 'training.npz',
+                        rgb=np.zeros((3, 8, 8), dtype='uint8'), ndsm=np.zeros((8, 8), dtype='float32'),
+                        distance=np.full((8, 8), 5.0, dtype='float32'), valid=np.ones((8, 8), dtype=bool))
+    import hashlib
+    digest = hashlib.sha256((folder / 'training.npz').read_bytes()).hexdigest()
+    return {'tile': tile, 'split': split, 'path': f'{tile}/training.npz',
+           'training_sha256': digest, 'bbox_wgs84': [0, 0, 1, 1], 'parcels': 1}
+
+
+def test_build_snapshot_actually_copies_files_and_uses_patches_field_names(tmp_path):
+    """Regression, both real bugs found by actually running the pipeline:
+    (1) the snapshot only verified tiles in place and never copied them --
+    a manifest pointing back at a live, still-growing source directory is
+    not a snapshot; (2) it wrote 'training_sha256', but Patches() (the
+    actual production reader in train_real.py) reads 'sha256' -- confirmed
+    by running Patches() against the output and hitting KeyError: 'sha256'.
+    """
+    import importlib.util
+    spec = importlib.util.spec_from_file_location('build_snapshot', Path(__file__).parents[1] / 'build_snapshot.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    source = tmp_path / 'source'
+    entry = _write_new_schema_tile(source, 'TILE_A')
+    (source / 'manifest.json').write_text(json.dumps({'tiles': [entry]}))
+
+    out = tmp_path / 'snapshot'
+    import sys
+    old_argv = sys.argv
+    sys.argv = ['build_snapshot.py', '--source', str(source), '--out', str(out)]
+    try:
+        module.main()
+    finally:
+        sys.argv = old_argv
+
+    # (1) the file must actually exist in the snapshot, independent of source
+    assert (out / 'TILE_A' / 'training.npz').exists()
+    import shutil
+    shutil.rmtree(source)  # if this were a reference, not a copy, the snapshot would now be broken
+    assert (out / 'TILE_A' / 'training.npz').exists()
+
+    # (2) Patches() must be able to read the snapshot's own manifest directly
+    import sys as _sys
+    _sys.path.insert(0, str(Path(__file__).parents[1]))
+    from train_real import Patches
+    patches = Patches(out, 'train', size=8)
+    assert len(patches) == 1
