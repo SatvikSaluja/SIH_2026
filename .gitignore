@@ -26,3 +26,6 @@ artifacts/nz_100_png_metadata.zip
 data/nz_multitask_real/
 artifacts/nz_multitask_real.zip
 data/svamitva/
+
+benchmark_result.json
+proxy_project/
