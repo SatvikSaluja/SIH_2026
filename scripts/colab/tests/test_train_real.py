@@ -376,3 +376,57 @@ def test_tile_grouped_shuffle_reshuffles_across_epochs():
     first = list(sampler)
     second = list(sampler)  # DataLoader calls __iter__ again each epoch
     assert first != second, "two epochs produced the identical order -- not actually reshuffling"
+
+
+def test_best_checkpoint_tracks_f1_not_val_loss(tmp_path, monkeypatch):
+    """Real run finding: under this task's class imbalance, val loss and
+    boundary F1 diverge -- the lowest-loss epoch can have far worse recall
+    than a noisier-loss epoch later on (measured: F1=0.032 at the min-loss
+    epoch vs F1=0.123 at a worse-loss epoch). best.pt must keep the
+    high-F1 epoch, not the low-loss one."""
+    data = _make_dataset(tmp_path / "data")
+    out = tmp_path / "run"
+
+    # epoch 1 mirrors the real run's epoch 12: great loss, terrible F1.
+    # epoch 2 mirrors the real run's epoch 23: worse loss, far better F1.
+    scripted = iter([
+        dict(loss=1.0, distance_mae_m=5.0, precision=0.8, recall=0.01, f1=0.02, valid_pixels=100, definition="x"),
+        dict(loss=3.0, distance_mae_m=5.0, precision=0.6, recall=0.10, f1=0.15, valid_pixels=100, definition="x"),
+    ])
+    monkeypatch.setattr(module, "evaluate", lambda *a, **k: next(scripted))
+    monkeypatch.setattr(sys, "argv", ["train_real.py", "--data", str(data), "--out", str(out),
+                                       "--cpu", "--epochs", "2", "--batch-size", "2"])
+    module.main()
+
+    best = torch.load(out / "best.pt", map_location="cpu", weights_only=True)
+    assert best["epoch"] == 2, (
+        f"best.pt is epoch {best['epoch']}: a loss-based criterion would wrongly keep epoch 1 "
+        "(lower loss, F1=0.02) over epoch 2 (higher loss, F1=0.15)")
+    assert best["best"] == pytest.approx(0.15)
+
+
+def test_resume_rearms_a_pre_f1_criterion_checkpoint(tmp_path, monkeypatch):
+    """A checkpoint saved under the old loss-based criterion has best>1.0
+    (a val loss, not an F1). Resuming must detect and reset it -- otherwise
+    every future F1 (<=1.0) looks like a non-improvement forever and
+    best.pt silently stops updating for the rest of the run."""
+    data = _make_dataset(tmp_path / "data")
+    out = tmp_path / "run"
+    cmd = [sys.executable, str(Path(__file__).parents[1] / "train_real.py"),
+           "--data", str(data), "--out", str(out), "--cpu", "--epochs", "1", "--batch-size", "2"]
+    subprocess.run(cmd, capture_output=True, text=True, timeout=60, check=True)
+
+    # Simulate a checkpoint from before this fix: best left as a val loss.
+    stale = torch.load(out / "last.pt", map_location="cpu", weights_only=True)
+    stale["best"] = 1.64  # a real val-loss value from the actual run
+    torch.save(stale, out / "last.pt")
+
+    scripted = iter([dict(loss=2.0, distance_mae_m=5.0, precision=0.5, recall=0.05, f1=0.05,
+                          valid_pixels=100, definition="x")])
+    monkeypatch.setattr(module, "evaluate", lambda *a, **k: next(scripted))
+    monkeypatch.setattr(sys, "argv", ["train_real.py", "--data", str(data), "--out", str(out),
+                                       "--cpu", "--epochs", "2", "--batch-size", "2", "--resume"])
+    module.main()
+
+    best = torch.load(out / "best.pt", map_location="cpu", weights_only=True)
+    assert best["epoch"] == 2, "resumed epoch's F1=0.05 must register as an improvement over the re-armed best"

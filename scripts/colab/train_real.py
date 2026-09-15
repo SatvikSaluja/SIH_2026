@@ -223,7 +223,15 @@ def main():
     # symptom this same way; T_max=a.epochs so a --resume with a longer
     # --epochs value still anneals to the NEW final epoch, not the old one.
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer,T_max=a.epochs,eta_min=config['lr']*0.01)
-    history, best, start = [], float('inf'), 0
+    # best tracks val F1 (the metric this task actually cares about), not
+    # val loss -- aggregate pixel NLL is dominated by the (vast majority)
+    # non-boundary background class under this class imbalance, so the
+    # lowest-loss epoch can have far worse boundary recall than a
+    # noisier-loss epoch later in training. Measured on a real run: the
+    # min-val-loss epoch had F1=0.032, a later epoch had F1=0.123 at a
+    # worse loss -- the old loss-based criterion would have kept the
+    # worse-at-the-actual-task checkpoint as best.pt.
+    history, best, start = [], -1., 0
     if a.resume or a.evaluate:
         saved = torch.load(outdir/('best.pt' if a.evaluate else 'last.pt'),map_location=device,weights_only=True)
         if saved['manifest_sha256'] != signature or saved['config'] != config:
@@ -232,6 +240,12 @@ def main():
         optimizer.load_state_dict(saved['optimizer'])
         if 'scheduler' in saved: scheduler.load_state_dict(saved['scheduler'])
         history,best,start = saved['history'],saved['best'],saved['epoch']
+        if best > 1.:  # F1 is capped at 1.0; >1 means this checkpoint predates
+            # the F1-based criterion and 'best' is a leftover val-loss value --
+            # comparing future F1s against it would never look like an
+            # improvement, freezing best.pt forever. Re-arm it instead.
+            print(f'best={best} predates F1-based selection; resetting so best.pt can update again.',flush=True)
+            best = -1.
         torch.set_rng_state(saved['rng_state'].cpu())
         if device.type=='cuda' and saved['cuda_rng_state'] is not None:
             torch.cuda.set_rng_state(saved['cuda_rng_state'].cpu())
@@ -256,8 +270,8 @@ def main():
         scheduler.step()
         metrics = evaluate(model,val,device)
         if not np.isfinite(metrics['loss']): raise ValueError('Nonfinite validation loss')
-        improved = metrics['loss'] < best
-        best = min(best,metrics['loss'])
+        improved = metrics['f1'] > best
+        best = max(best,metrics['f1'])
         history.append(dict(epoch=epoch+1,train_loss=total/len(train.dataset),validation=metrics,seconds=time.monotonic()-began))
         payload = dict(model=model.state_dict(),optimizer=optimizer.state_dict(),scheduler=scheduler.state_dict(),epoch=epoch+1,
                        best=best,history=history,config=config,manifest_sha256=signature,
