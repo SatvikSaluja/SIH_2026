@@ -77,7 +77,7 @@ def load_tile_patches(npz_path, size=128, stride=64, min_valid=0.90):
                 patches.append((r, c))
     if not patches:
         raise ValueError(f'No patches meet valid>={min_valid} at size={size} in this tile')
-    tensors = []
+    tensors, offsets = [], []
     for r, c in patches:
         tensors.append((
             torch.from_numpy(rgb[:, r:r + size, c:c + size].astype('float32') / 255.0),
@@ -85,7 +85,8 @@ def load_tile_patches(npz_path, size=128, stride=64, min_valid=0.90):
             torch.from_numpy(distance[None, r:r + size, c:c + size].astype('float32')),
             torch.from_numpy(valid[None, r:r + size, c:c + size].astype('float32')),
         ))
-    return tensors, (rgb, ndsm, distance, valid)
+        offsets.append((r, c))
+    return tensors, offsets, (rgb, ndsm, distance, valid)
 
 
 def train_A_sdf(patches, warm_start, epochs, boundary_weight=15.0, decay=1.5, lr=1e-3):
@@ -189,26 +190,40 @@ def main():
     outdir = Path(args.out)
     outdir.mkdir(parents=True, exist_ok=True)
 
-    patches, (rgb_full, _, distance_full, valid_full) = load_tile_patches(args.npz)
+    patches, offsets, (rgb_full, _, distance_full, valid_full) = load_tile_patches(args.npz)
     print(f'{len(patches)} overlapping patches from this one tile, training==evaluating on all of them', flush=True)
 
     print('Training model A (MultiTaskNet SDF regression, warm-started)...', flush=True)
     model_a, history_a = train_A_sdf(patches, args.warm_start, args.epochs)
     metrics_a = evaluate_A(model_a, patches)
     print(f'  A: train loss {history_a[0]:.4f} -> {history_a[-1]:.4f}; {metrics_a}', flush=True)
+    torch.save(model_a.state_dict(), outdir / 'model_a.pt')  # before anything else can lose 40 minutes of training
 
     print('Training model B (full-resolution direct classifier, cold)...', flush=True)
     model_b, history_b = train_B_classifier(patches, args.epochs)
     metrics_b = evaluate_B(model_b, patches)
     print(f'  B: train loss {history_b[0]:.4f} -> {history_b[-1]:.4f}; {metrics_b}', flush=True)
+    torch.save(model_b.state_dict(), outdir / 'model_b.pt')
 
+    # MultiTaskNet's cross-attention fusion is O((H*W)^2) in token count --
+    # correct on a 128x128 training patch, but a full ~1200x800 tile needs a
+    # ~60,000x60,000 attention matrix per head (confirmed: this crashed
+    # trying to allocate 57.6GB the first time this script ran it that way).
+    # Stitch the SAME patches the model was actually trained/evaluated on
+    # instead of a single whole-tile forward pass it was never sized for.
+    size = 128
+    h, w = valid_full.shape
+    pred_a_full = np.zeros((h, w), dtype=bool)
+    pred_b_full = np.zeros((h, w), dtype=bool)
+    model_a.eval(); model_b.eval()
     with torch.no_grad():
-        rgb_t = torch.from_numpy(rgb_full.astype('float32') / 255.0).unsqueeze(0)
-        ndsm_t = torch.from_numpy(np.load(args.npz)['ndsm'].astype('float32')).unsqueeze(0).unsqueeze(0)
-        model_a.eval(); out_a = model_a(rgb_t, ndsm_t)
-        pred_a_mask = (out_a['sdf'][0, 0].abs() <= 0.3).numpy() & valid_full.astype(bool)
-        model_b.eval(); logits_b = model_b(rgb_t, ndsm_t)
-        pred_b_mask = (torch.sigmoid(logits_b)[0, 0] > 0.5).numpy() & valid_full.astype(bool)
+        for (rgb, ndsm, _target, _valid), (r, c) in zip(patches, offsets):
+            out_a = model_a(rgb.unsqueeze(0), ndsm.unsqueeze(0))
+            pred_a_full[r:r + size, c:c + size] |= (out_a['sdf'][0, 0].abs() <= 0.3).numpy()
+            logits_b = model_b(rgb.unsqueeze(0), ndsm.unsqueeze(0))
+            pred_b_full[r:r + size, c:c + size] |= (torch.sigmoid(logits_b)[0, 0] > 0.5).numpy()
+    pred_a_mask = pred_a_full & valid_full.astype(bool)
+    pred_b_mask = pred_b_full & valid_full.astype(bool)
 
     true_mask = (distance_full <= 0.3) & valid_full.astype(bool)
     render_overlay(rgb_full, true_mask, pred_a_mask, pred_b_mask, outdir / 'overlay.png')
