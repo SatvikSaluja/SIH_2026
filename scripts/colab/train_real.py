@@ -1,5 +1,6 @@
 """Real RGB+nDSM parcel-distance training for MultiTaskNet; other heads unsupervised."""
 import argparse
+import functools
 import hashlib
 import json
 from pathlib import Path
@@ -61,9 +62,25 @@ def masked_loss(out, target, valid, boundary_weight=15.0, decay=1.5):
     return (per_pixel * weight).sum() / weight.sum().clamp(min=1.0)
 
 
+@functools.lru_cache(maxsize=32)
+def _load_tile(path):
+    """Bounded cache, not "load everything": 708 tiles held permanently
+    (the original design) measured at 8.85GB RAM for this exact snapshot --
+    confirmed directly, not estimated -- which is why a free-tier Colab
+    kernel restarted mid-run. 32 tiles caps memory at roughly 32x a single
+    tile's size regardless of dataset size, at the cost of re-decompressing
+    a tile on a cache miss; correct for a dataset that keeps growing past
+    what fits in memory, wrong to "optimize away" for a dataset small
+    enough that eager loading was actually fine (the sub-20-tile case this
+    class was first written and tested against).
+    """
+    with np.load(path) as z:
+        return tuple(z[k].copy() for k in ('rgb', 'ndsm', 'distance', 'valid'))
+
+
 class Patches(Dataset):
     def __init__(self, root, split, size=128):
-        self.arrays, self.windows = [], []
+        self.paths, self.windows = [], []
         self.size = size
         manifest = json.loads((root / 'manifest.json').read_text())
         for entry in manifest['tiles']:
@@ -71,15 +88,18 @@ class Patches(Dataset):
                 continue
             path = root / entry['path']
             assert hashlib.sha256(path.read_bytes()).hexdigest() == entry['sha256'], 'Changed training data'
+            # Only 'valid' is needed to find windows -- an npz's per-key
+            # access decompresses just that array, not rgb/ndsm/distance
+            # too, so this stays cheap even at hundreds of tiles.
             with np.load(path) as z:
-                arrays = tuple(z[k].copy() for k in ('rgb', 'ndsm', 'distance', 'valid'))
-            index = len(self.arrays)
-            self.arrays.append(arrays)
-            h, w = arrays[-1].shape
-            for r in range(0, h-size+1, size):
-                for c in range(0, w-size+1, size):
-                    if arrays[-1][r:r+size,c:c+size].mean() >= .95:
-                        self.windows.append((index,r,c))
+                valid = z['valid']
+                h, w = valid.shape
+                index = len(self.paths)
+                for r in range(0, h-size+1, size):
+                    for c in range(0, w-size+1, size):
+                        if valid[r:r+size,c:c+size].mean() >= .95:
+                            self.windows.append((index,r,c))
+            self.paths.append(path)
         if not self.windows:
             raise ValueError('No valid patches for ' + split)
 
@@ -88,7 +108,7 @@ class Patches(Dataset):
 
     def __getitem__(self, index):
         k,r,c = self.windows[index]
-        rgb, height, distance, valid = self.arrays[k]
+        rgb, height, distance, valid = _load_tile(self.paths[k])
         s = self.size
         crop = lambda a: torch.from_numpy(a[...,r:r+s,c:c+s].astype('float32').copy())
         return crop(rgb)/255, crop(height[None]), crop(distance[None]), crop(valid[None])

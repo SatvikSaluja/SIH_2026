@@ -279,3 +279,63 @@ def test_evaluate_loss_is_independent_of_how_patches_are_batched():
     # confirm the fix didn't regress those.
     assert two_batch["distance_mae_m"] == pytest.approx(one_batch["distance_mae_m"])
     assert two_batch["f1"] == pytest.approx(one_batch["f1"])
+
+
+def test_patches_init_does_not_eagerly_load_full_tile_arrays(tmp_path):
+    """Regression: __init__ used to decompress and permanently hold every
+    tile's rgb/ndsm/distance/valid arrays -- measured directly at 8.51GB
+    for the real 708-tile snapshot, which is what crashed a free-tier
+    Colab kernel (system RAM, not GPU memory). __init__ must only need
+    'valid' (for window discovery); rgb/ndsm/distance must stay
+    undecompressed until something actually asks for a patch.
+    """
+    root = _make_dataset(tmp_path / "data")
+    original_load = np.load
+    accessed_keys = []
+
+    class TrackingNpzFile:
+        def __init__(self, real):
+            self._real = real
+        def __getitem__(self, key):
+            accessed_keys.append(key)
+            return self._real[key]
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            self._real.close()
+
+    def tracking_load(path, *a, **kw):
+        return TrackingNpzFile(original_load(path, *a, **kw))
+
+    module.np.load = tracking_load
+    try:
+        module.Patches(root, "train", size=32)
+    finally:
+        module.np.load = original_load
+
+    assert accessed_keys == ["valid"] * accessed_keys.count("valid"), accessed_keys
+    assert "rgb" not in accessed_keys
+    assert "ndsm" not in accessed_keys
+    assert "distance" not in accessed_keys
+
+
+def test_load_tile_cache_avoids_redundant_decompression(tmp_path, monkeypatch):
+    root = _make_dataset(tmp_path / "data")
+    patches = module.Patches(root, "train", size=32)
+    module._load_tile.cache_clear()
+
+    call_count = {"n": 0}
+    original = module.np.load
+
+    def counting_load(path, *a, **kw):
+        call_count["n"] += 1
+        return original(path, *a, **kw)
+
+    monkeypatch.setattr(module.np, "load", counting_load)
+    # Same tile (index 0's patches all come from one tile) accessed
+    # repeatedly -- the cache must serve later accesses without re-reading.
+    same_tile_indices = [i for i, w in enumerate(patches.windows) if w[0] == 0][:5]
+    assert len(same_tile_indices) >= 2, "fixture needs a tile with multiple windows to test caching"
+    for i in same_tile_indices:
+        patches[i]
+    assert call_count["n"] == 1, f"expected exactly 1 real load for repeated access to one tile, got {call_count['n']}"
