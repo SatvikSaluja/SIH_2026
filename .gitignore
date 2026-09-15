@@ -29,3 +29,5 @@ data/svamitva/
 
 benchmark_result.json
 proxy_project/
+
+.local_workspace/

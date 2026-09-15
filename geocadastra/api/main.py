@@ -52,6 +52,9 @@ from geocadastra.synth.generator import WardParams, generate_ward
 
 app = FastAPI(title="GeoCadastra")
 
+from geocadastra.api.workspace import router as workspace_router
+app.include_router(workspace_router)
+
 # No auth exists yet (see api/main.py's own module docstring gaps), so this
 # is a dev-scoped allowlist, not "*": GEOCADASTRA_CORS_ORIGINS overrides it
 # for a real deployment, but the default must not silently accept every
