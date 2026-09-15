@@ -339,3 +339,40 @@ def test_load_tile_cache_avoids_redundant_decompression(tmp_path, monkeypatch):
     for i in same_tile_indices:
         patches[i]
     assert call_count["n"] == 1, f"expected exactly 1 real load for repeated access to one tile, got {call_count['n']}"
+
+
+def test_tile_grouped_shuffle_keeps_one_tiles_patches_consecutive():
+    """Regression: plain DataLoader(shuffle=True) over many tiles gave the
+    32-tile LRU cache a 2.5% hit rate (312 misses in 10 batches of 32),
+    measured directly against the real 708-tile snapshot -- ~47 minutes
+    projected for data loading alone in one epoch. A tile-grouped sampler
+    must keep one tile's patches together so the cache stays warm.
+    """
+    # windows: tile 0 has 3 patches, tile 1 has 2, tile 2 has 4
+    windows = [(0, 0, 0), (0, 0, 1), (0, 0, 2), (1, 0, 0), (1, 0, 1),
+              (2, 0, 0), (2, 0, 1), (2, 0, 2), (2, 0, 3)]
+    torch.manual_seed(0)
+    order = list(module.TileGroupedShuffle(windows))
+    assert sorted(order) == list(range(len(windows)))  # every index visited exactly once
+
+    # Reconstruct which TILE each yielded index belongs to, and confirm
+    # same-tile indices are never separated by a different tile's index.
+    tile_of = {i: windows[i][0] for i in range(len(windows))}
+    tile_sequence = [tile_of[i] for i in order]
+    seen_and_closed = set()
+    current = None
+    for t in tile_sequence:
+        if t != current:
+            assert t not in seen_and_closed, f"tile {t} revisited after another tile interleaved: {tile_sequence}"
+            seen_and_closed.add(current) if current is not None else None
+            current = t
+    assert len(order) == len(windows)
+
+
+def test_tile_grouped_shuffle_reshuffles_across_epochs():
+    windows = [(t, 0, p) for t in range(20) for p in range(5)]
+    torch.manual_seed(0)
+    sampler = module.TileGroupedShuffle(windows)
+    first = list(sampler)
+    second = list(sampler)  # DataLoader calls __iter__ again each epoch
+    assert first != second, "two epochs produced the identical order -- not actually reshuffling"

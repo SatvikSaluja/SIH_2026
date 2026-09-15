@@ -20,7 +20,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from geocadastra.models.backbone import MultiTaskNet
-from train_real import Patches, evaluate, masked_loss
+from train_real import Patches, TileGroupedShuffle, evaluate, masked_loss
 
 
 def main():
@@ -39,7 +39,9 @@ def main():
         torch.cuda.reset_peak_memory_stats(device)
 
     root = Path(args.data)
-    train_loader = DataLoader(Patches(root, 'train'), batch_size=args.batch_size, shuffle=True)
+    train_patches = Patches(root, 'train')
+    train_loader = DataLoader(train_patches, batch_size=args.batch_size,
+                              sampler=TileGroupedShuffle(train_patches.windows))
     val_loader = DataLoader(Patches(root, 'val'), batch_size=args.batch_size)
     print(f'{len(train_loader.dataset)} training patches, {len(val_loader.dataset)} validation patches, '
          f'batch_size={args.batch_size} -> {len(train_loader)} train batches/epoch', flush=True)

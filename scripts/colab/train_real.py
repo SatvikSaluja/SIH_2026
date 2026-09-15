@@ -9,7 +9,7 @@ import time
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 import numpy as np
 import torch
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, Sampler
 from geocadastra.models.backbone import MultiTaskNet
 
 
@@ -114,6 +114,44 @@ class Patches(Dataset):
         return crop(rgb)/255, crop(height[None]), crop(distance[None]), crop(valid[None])
 
 
+class TileGroupedShuffle(Sampler):
+    """Shuffle which TILE comes next, and shuffle patch order WITHIN each
+    tile, but keep one tile's own patches consecutive -- restores the
+    locality plain index-level shuffling destroys.
+
+    Measured, not assumed: full torch DataLoader(shuffle=True) over 708
+    tiles gave _load_tile's 32-entry LRU cache a 2.5% hit rate (312 misses
+    in 10 batches of 32) -- a batch of 32 uniformly random patches almost
+    never repeats a tile from the previous batch, so nearly every patch
+    re-reads and re-decompresses its tile from disk. Projected ~47 minutes
+    of pure data loading for one epoch, before any GPU compute.
+
+    This is not full IID shuffling -- it's shuffled at tile granularity,
+    the standard tradeoff for a dataset too large to hold in memory as a
+    whole. Both the tile order and each tile's patch order are reshuffled
+    every epoch (a fresh Sampler instance each epoch, matching how
+    DataLoader already re-invokes __iter__ per epoch), so training still
+    sees a different sequence each time, just not fully independent
+    sample-by-sample.
+    """
+    def __init__(self, windows):
+        self.by_tile = {}
+        for i, (tile_idx, _r, _c) in enumerate(windows):
+            self.by_tile.setdefault(tile_idx, []).append(i)
+        self._len = len(windows)
+
+    def __iter__(self):
+        tile_ids = list(self.by_tile)
+        for t in torch.randperm(len(tile_ids)).tolist():
+            indices = self.by_tile[tile_ids[t]]
+            perm = torch.randperm(len(indices)).tolist()
+            for p in perm:
+                yield indices[p]
+
+    def __len__(self):
+        return self._len
+
+
 @torch.no_grad()
 def evaluate(model, loader, device):
     model.eval()
@@ -203,7 +241,8 @@ def main():
         result['selected_epoch'] = start
         (outdir/'test_metrics.json').write_text(json.dumps(result,indent=2))
         print(json.dumps(result,indent=2)); return
-    train = DataLoader(Patches(root,'train'),batch_size=a.batch_size,shuffle=True)
+    train_patches = Patches(root,'train')
+    train = DataLoader(train_patches,batch_size=a.batch_size,sampler=TileGroupedShuffle(train_patches.windows))
     val = DataLoader(Patches(root,'val'),batch_size=a.batch_size)
     print(f'Device: {device}; REAL imagery; {len(train.dataset)} training patches; {len(val.dataset)} validation patches',flush=True)
     for epoch in range(start,a.epochs):
