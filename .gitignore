@@ -30,3 +30,56 @@ proxy_project/
 # ignored (data/ showed as one untracked dir in `git status`, one `git add .`
 # away from committing tens of GB). One rule covers every future pool too.
 data/
+
+# --- friend_project/BhoomiDrishti_AI's own rules, kept as-is (their TS/Node
+# monorepo now shares this tree; neither project's own ignore rules cover
+# the other's build/dependency artifacts) ---
+# See https://docs.github.com/en/get-started/getting-started-with-git/ignoring-files for more about ignoring files.
+
+# compiled output
+dist
+tmp
+out-tsc
+*.tsbuildinfo
+.expo
+.expo-shared
+
+# dependencies
+node_modules
+
+# IDEs and editors
+/.idea
+.project
+.classpath
+.c9/
+*.launch
+.settings/
+*.sublime-workspace
+
+# IDE - VSCode
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+# misc
+/.sass-cache
+/connect.lock
+/coverage
+/libpeerconnection.log
+npm-debug.log
+yarn-error.log
+testem.log
+/typings
+
+# System Files
+Thumbs.db
+
+.cursor/rules/nx-rules.mdc
+.github/instructions/nx.instructions.md
+
+# Replit
+.cache/
+.local/
+friend_project/

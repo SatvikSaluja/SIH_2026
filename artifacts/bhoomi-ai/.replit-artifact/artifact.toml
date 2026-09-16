@@ -1,0 +1,28 @@
+kind = "web"
+previewPath = "/"
+title = "BhoomiAI"
+description = "A government-grade geospatial command center for AI-assisted urban parcel mapping, cadastral feature extraction, topology validation, change detection, and field verification."
+version = "1.0.0"
+id = "artifacts/bhoomi-ai"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 25035
+
+[services.development]
+run = "pnpm --filter @workspace/bhoomi-ai run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/bhoomi-ai", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/bhoomi-ai/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "25035"
+BASE_PATH = "/"
