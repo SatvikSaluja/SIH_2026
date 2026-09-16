@@ -11,9 +11,39 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader, Sampler
 from geocadastra.models.backbone import MultiTaskNet
+from geocadastra.api.workspace import evidence_arrays
 
 
-def weighted_nll_terms(out, target, valid, boundary_weight=15.0, decay=1.5):
+def visibility_score(rgb, height, valid):
+    """Per-pixel image-evidence strength for a whole batch, in [0,1].
+
+    Reuses evidence_arrays() as-is (RGB Sobel edges + nDSM gradient) --
+    the exact heuristic already reviewed for the workspace's evidence tab,
+    not a second implementation of it. That tab only ever showed this
+    score to a human reviewer; feeding it back into the loss below (via
+    `visibility=`) is the actual integration -- a boundary pixel with no
+    visible image feature (a fenceline, a hedge, a legal boundary the
+    photo simply can't show) gets less of the boundary-weighting penalty
+    instead of being punished at full strength for something the image
+    never could have shown.
+
+    evidence_arrays() operates on one tile's arrays at a time (its Sobel
+    calls would blur across a leading batch axis if given one directly),
+    so this loops over the batch -- cheap at 128px patches relative to a
+    training step's forward/backward pass.
+    """
+    b, _, h, w = rgb.shape
+    out = np.empty((b, 1, h, w), dtype='float32')
+    for i in range(b):
+        sample = {'rgb': (rgb[i].detach().cpu().numpy() * 255).astype('uint8'),
+                 'ndsm': height[i, 0].detach().cpu().numpy(),
+                 'valid': valid[i, 0].detach().cpu().numpy().astype(bool)}
+        score, _classes = evidence_arrays(sample, gsd=0.3)  # gsd only affects the
+        out[i, 0] = score                                  # unused _classes/ref path
+    return torch.from_numpy(out).to(rgb.device)
+
+
+def weighted_nll_terms(out, target, valid, boundary_weight=15.0, decay=1.5, visibility=None):
     """(per_pixel_loss, weight) tensors -- the raw terms, not yet reduced.
 
     Split out from masked_loss() specifically so evaluate() can accumulate
@@ -26,14 +56,23 @@ def weighted_nll_terms(out, target, valid, boundary_weight=15.0, decay=1.5):
     pixels, grouped as one batch vs. two, reported 12.68 vs 50.16 for what
     was supposed to be the same "loss" (see PR notes) -- a 4x difference
     with zero change to the model or the data.
+
+    `visibility` (optional [B,1,H,W] in [0,1], see visibility_score())
+    scales only the boundary-weighting term, not the base 1.0 every valid
+    pixel already gets. None -- the default, and every call site that
+    predates this parameter -- reproduces the prior math exactly; no
+    visibility computation happens at all unless a caller opts in.
     """
     precision = torch.exp(-out['log_var'])
     per_pixel = 0.5 * precision * (out['sdf'] - target) ** 2 + 0.5 * out['log_var']
-    weight = valid * (1.0 + boundary_weight * torch.exp(-target.clamp(min=0) / decay))
+    boundary = boundary_weight * torch.exp(-target.clamp(min=0) / decay)
+    if visibility is not None:
+        boundary = boundary * visibility
+    weight = valid * (1.0 + boundary)
     return per_pixel, weight
 
 
-def masked_loss(out, target, valid, boundary_weight=15.0, decay=1.5):
+def masked_loss(out, target, valid, boundary_weight=15.0, decay=1.5, visibility=None):
     """Heteroscedastic NLL (same math as sdf_nll_loss), but weighted toward
     near-boundary pixels.
 
@@ -50,7 +89,8 @@ def masked_loss(out, target, valid, boundary_weight=15.0, decay=1.5):
     consistent "how much does this pixel matter" convention across the
     project) rather than a hard threshold, so the model isn't abruptly
     blind to the bulk regression signal -- every valid pixel keeps weight
-    >= its own validity, boundary pixels get up to (1+boundary_weight)x.
+    >= its own validity, boundary pixels get up to (1+boundary_weight)x
+    (scaled down by `visibility` where provided).
 
     This per-batch ratio is correct to train on (each batch's own gradient
     only ever needs its own batch's mean). It is NOT safe to accumulate
@@ -58,7 +98,7 @@ def masked_loss(out, target, valid, boundary_weight=15.0, decay=1.5):
     weighted_nll_terms()'s docstring; evaluate() does the accumulation
     that way for that exact reason.
     """
-    per_pixel, weight = weighted_nll_terms(out, target, valid, boundary_weight, decay)
+    per_pixel, weight = weighted_nll_terms(out, target, valid, boundary_weight, decay, visibility)
     return (per_pixel * weight).sum() / weight.sum().clamp(min=1.0)
 
 
@@ -153,14 +193,20 @@ class TileGroupedShuffle(Sampler):
 
 
 @torch.no_grad()
-def evaluate(model, loader, device):
+def evaluate(model, loader, device, visibility_aware=False):
     model.eval()
     weighted_sum = weight_total = pixels = tp = fp = fn = absolute = 0.
     for batch in loader:
         rgb, height, target, valid = [x.to(device) for x in batch]
         out = model(rgb,height)
         n = valid.sum().item()
-        per_pixel, weight = weighted_nll_terms(out, target, valid)
+        # F1/precision/recall/distance_mae below are the actual product
+        # metrics -- always computed against the real 0.3m reference,
+        # never scaled by this project's own training heuristic. Only the
+        # diagnostic `loss` field optionally reflects visibility weighting,
+        # so it stays comparable to whatever masked_loss() is optimizing.
+        visibility = visibility_score(rgb, height, valid) if visibility_aware else None
+        per_pixel, weight = weighted_nll_terms(out, target, valid, visibility=visibility)
         # Accumulate the RAW sums and divide once at the end -- a true
         # global weighted mean over every pixel in the split, not a
         # per-batch ratio re-averaged by raw pixel count (which depends on
@@ -191,6 +237,13 @@ def main():
     p.add_argument('--warm-start',help='Load model weights from a DIFFERENT checkpoint '
                    '(e.g. a synthetic-trained one) before training starts. Distinct from '
                    '--resume: this starts a fresh epoch 0/optimizer/history, not a continued run.')
+    p.add_argument('--visibility-aware',action='store_true',
+                   help='Scale the boundary loss term by RGB/nDSM edge evidence (the same '
+                        'Sobel-based heuristic as the workspace evidence tab): a boundary '
+                        'pixel with no visible image feature is weighted closer to an '
+                        'ordinary far-from-boundary pixel instead of being penalized at full '
+                        'strength for something the image cannot show. Off by default -- '
+                        'identical loss math to before this flag existed.')
     a = p.parse_args()
     if min(a.epochs,a.batch_size)<1: raise ValueError('Counts must be positive')
     if a.warm_start and a.resume: raise ValueError('--warm-start and --resume are mutually exclusive')
@@ -200,7 +253,7 @@ def main():
     root, outdir = Path(a.data), Path(a.out)
     outdir.mkdir(parents=True,exist_ok=True)
     signature = hashlib.sha256((root/'manifest.json').read_bytes()).hexdigest()
-    config = dict(batch_size=a.batch_size,patch_size=128,lr=.001,seed=42)
+    config = dict(batch_size=a.batch_size,patch_size=128,lr=.001,seed=42,visibility_aware=a.visibility_aware)
     model = MultiTaskNet().to(device)
     warm_start_source = None
     if a.warm_start:
@@ -251,7 +304,8 @@ def main():
             torch.cuda.set_rng_state(saved['cuda_rng_state'].cpu())
     elif (outdir/'last.pt').exists(): raise ValueError('Use --resume or a new output folder')
     if a.evaluate:
-        result = evaluate(model,DataLoader(Patches(root,'test'),batch_size=a.batch_size),device)
+        result = evaluate(model,DataLoader(Patches(root,'test'),batch_size=a.batch_size),device,
+                          visibility_aware=a.visibility_aware)
         result['selected_epoch'] = start
         (outdir/'test_metrics.json').write_text(json.dumps(result,indent=2))
         print(json.dumps(result,indent=2)); return
@@ -264,11 +318,12 @@ def main():
         for batch in train:
             rgb,height,target,valid = [x.to(device) for x in batch]
             optimizer.zero_grad(set_to_none=True)
-            loss = masked_loss(model(rgb,height),target,valid)
+            visibility = visibility_score(rgb,height,valid) if a.visibility_aware else None
+            loss = masked_loss(model(rgb,height),target,valid,visibility=visibility)
             if not torch.isfinite(loss): raise ValueError('Nonfinite training loss')
             loss.backward(); optimizer.step(); total += loss.item()*len(rgb)
         scheduler.step()
-        metrics = evaluate(model,val,device)
+        metrics = evaluate(model,val,device,visibility_aware=a.visibility_aware)
         if not np.isfinite(metrics['loss']): raise ValueError('Nonfinite validation loss')
         improved = metrics['f1'] > best
         best = max(best,metrics['f1'])

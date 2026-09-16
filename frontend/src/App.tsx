@@ -198,6 +198,7 @@ export default function App() {
   const [run, setRun] = useState("");
   const [epochs, setEpochs] = useState(5);
   const [batch, setBatch] = useState(4);
+  const [visibilityAware, setVisibilityAware] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
@@ -1241,6 +1242,20 @@ export default function App() {
                       onChange={(e) => setBatch(Number(e.target.value))}
                     />
                   </label>
+                  <label className="checkbox-label">
+                    <input
+                      type="checkbox"
+                      checked={visibilityAware}
+                      onChange={(e) => setVisibilityAware(e.target.checked)}
+                    />
+                    Visibility-aware boundary loss
+                  </label>
+                  <p className="muted">
+                    Down-weights the boundary loss term by the same RGB/nDSM
+                    edge-evidence score the Evidence tab shows a reviewer, so a
+                    boundary with no visible image feature is penalized less.
+                    Off reproduces the trainer's exact prior loss.
+                  </p>
                   <button
                     disabled={busy || !dataset}
                     onClick={() =>
@@ -1249,6 +1264,7 @@ export default function App() {
                           dataset,
                           epochs,
                           batch_size: batch,
+                          visibility_aware: visibilityAware,
                         });
                         setNotice(
                           "Training queued. Epoch history updates when the trainer writes it.",

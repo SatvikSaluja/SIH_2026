@@ -390,6 +390,10 @@ class TrainRequest(BaseModel):
     dataset:str
     epochs:int=Field(1,ge=1,le=100)
     batch_size:int=Field(4,ge=1,le=16)
+    visibility_aware:bool=False  # down-weight the boundary loss term by this
+    # same tab's own evidence score (RGB Sobel/nDSM edges) instead of only
+    # ever showing it to a human reviewer; off by default, matching the
+    # trainer's own flag default -- see train_real.py's --visibility-aware.
 
 
 @router.post('/training',status_code=202)
@@ -415,6 +419,7 @@ def run_training(job,manifest):
     try:
         cmd=[sys.executable,str(ROOT/'scripts/colab/train_real.py'),'--data',str(manifest.parent),'--out',str(out),
              '--epochs',str(job['epochs']),'--batch-size',str(job['batch_size'])]
+        if job.get('visibility_aware'):cmd.append('--visibility-aware')
         with (out/'console.log').open('w') as stream:
             proc=subprocess.run(cmd,cwd=ROOT,stdout=stream,stderr=subprocess.STDOUT,timeout=21600)
         job.update(status='completed' if proc.returncode==0 else 'failed',finished=time.time(),

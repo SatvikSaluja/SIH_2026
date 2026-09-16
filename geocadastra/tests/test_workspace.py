@@ -98,3 +98,28 @@ def test_interrupted_job_and_incompatible_training_refused(local):
     assert c.get('/workspace/jobs').json()[0]['status']=='interrupted'
     # This tile has boundary labels, but not the distance field needed by trainer.
     assert c.post('/workspace/training',json={'dataset':'example','epochs':1,'batch_size':1}).status_code==422
+
+
+def test_training_command_includes_visibility_aware_flag_only_when_requested(local, monkeypatch):
+    """The actual wiring: TrainRequest.visibility_aware must reach the
+    trainer subprocess as --visibility-aware, and must NOT be present
+    when the request left it at its False default -- checked directly
+    against the constructed command, not inferred from the job finishing
+    without error."""
+    c, root = local
+    captured = []
+
+    def fake_run(cmd, **kwargs):
+        captured.append(cmd)
+        class Result:
+            returncode = 0
+        return Result()
+
+    monkeypatch.setattr(ws.subprocess, 'run', fake_run)
+    manifest = root / 'data' / 'example' / 'manifest.json'
+
+    ws.run_training({'id': 'j1', 'epochs': 1, 'batch_size': 1, 'visibility_aware': True}, manifest)
+    assert '--visibility-aware' in captured[0]
+
+    ws.run_training({'id': 'j2', 'epochs': 1, 'batch_size': 1, 'visibility_aware': False}, manifest)
+    assert '--visibility-aware' not in captured[1]

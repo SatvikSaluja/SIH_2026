@@ -91,6 +91,15 @@ label textarea {
   display: block;
   margin-top: 7px;
 }
+.checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.checkbox-label input {
+  display: inline;
+  margin-top: 0;
+}
 h1,
 h2,
 h3,

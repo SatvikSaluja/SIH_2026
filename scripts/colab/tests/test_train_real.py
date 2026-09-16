@@ -430,3 +430,85 @@ def test_resume_rearms_a_pre_f1_criterion_checkpoint(tmp_path, monkeypatch):
 
     best = torch.load(out / "best.pt", map_location="cpu", weights_only=True)
     assert best["epoch"] == 2, "resumed epoch's F1=0.05 must register as an improvement over the re-armed best"
+
+
+def test_visibility_score_is_high_near_edges_low_on_flat_regions():
+    """The actual claim behind --visibility-aware: within one tile, a sharp
+    RGB edge (a real image feature) scores meaningfully higher than a
+    flat, featureless region of the SAME tile.
+
+    evidence_arrays() normalizes edge strength by that tile's own 5th/95th
+    percentile (matching a tile of hedges/grass having different absolute
+    contrast than one of buildings) -- comparing two SEPARATELY normalized
+    images the way an earlier version of this test did is the wrong check
+    for that design: a uniformly-strong-edge image and a uniformly-flat
+    one both compress toward the middle of their own range, since neither
+    has any internal contrast for the percentile normalization to stretch
+    against. The property that actually matters for loss weighting is
+    within-tile: does it tell an edge apart from flat nearby."""
+    h = w = 32
+    rgb = np.full((3, h, w), 128, dtype='uint8')
+    rgb[:, :, w // 2:] = 0
+    rgb[:, :, 3 * w // 4:] = 255  # wide (8px) blocks, not a 1px-period stripe --
+    # a centered Sobel-style kernel has a genuine blind spot at exactly
+    # Nyquist frequency (alternating single pixels look identical to it),
+    # confirmed directly while writing this test; wide steps avoid that.
+    height = np.zeros((h, w), dtype='float32')
+    valid = np.ones((h, w), dtype=bool)
+    # rgb must be [0,1]-scaled, matching Patches.__getitem__'s crop(rgb)/255
+    # convention -- visibility_score() re-multiplies by 255 to recover
+    # uint8, so feeding it already-0..255 values here would silently wrap.
+    batch = (torch.from_numpy(rgb[None]).float() / 255, torch.from_numpy(height[None, None]).float(),
+            torch.from_numpy(valid[None, None]))
+    score = module.visibility_score(*batch)[0, 0].numpy()
+    flat_score = score[:, 2:6].mean()      # well inside the flat block
+    edge_score = score[:, 21:27].mean()    # straddling the 0->255 step
+    assert edge_score > flat_score + 0.3  # not just noise-level higher
+
+
+def test_weighted_nll_terms_visibility_none_matches_prior_formula():
+    """Backward compatibility, checked directly against the formula, not
+    just inferred from other tests still passing: visibility=None (every
+    call site that predates this parameter) must reproduce the exact
+    prior weight, with no visibility computation involved at all."""
+    out = {"sdf": torch.zeros(1, 1, 1, 1), "log_var": torch.zeros(1, 1, 1, 1)}
+    target = torch.full((1, 1, 1, 1), 0.5)
+    valid = torch.ones(1, 1, 1, 1)
+    _, weight = module.weighted_nll_terms(out, target, valid)
+    expected = 1.0 + 15.0 * torch.exp(torch.tensor(-0.5 / 1.5))
+    assert weight.item() == pytest.approx(expected.item())
+
+
+def test_visibility_down_weights_a_boundary_pixel_with_no_image_evidence():
+    """The actual mechanism: two identical boundary pixels (same predicted
+    and true distance, both valid) must get DIFFERENT loss weight purely
+    because one has low image-evidence support and the other high --
+    otherwise --visibility-aware does nothing."""
+    out = {"sdf": torch.zeros(1, 1, 1, 1), "log_var": torch.zeros(1, 1, 1, 1)}
+    target = torch.zeros(1, 1, 1, 1)  # sitting right on a boundary
+    valid = torch.ones(1, 1, 1, 1)
+    _, weight_low = module.weighted_nll_terms(out, target, valid, visibility=torch.zeros(1, 1, 1, 1))
+    _, weight_high = module.weighted_nll_terms(out, target, valid, visibility=torch.ones(1, 1, 1, 1))
+    assert weight_low.item() == pytest.approx(1.0)  # boundary term fully zeroed out
+    assert weight_high.item() == pytest.approx(1.0 + 15.0)  # full boundary weight, matching visibility=None
+    assert weight_low.item() < weight_high.item()
+
+
+def test_visibility_aware_flag_recorded_and_off_by_default(tmp_path):
+    data = _make_dataset(tmp_path / "data")
+    out = tmp_path / "run"
+    cmd = [sys.executable, str(Path(__file__).parents[1] / "train_real.py"),
+           "--data", str(data), "--out", str(out), "--cpu", "--epochs", "1", "--batch-size", "2"]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    assert result.returncode == 0, result.stderr
+    ckpt = torch.load(out / "last.pt", map_location="cpu", weights_only=True)
+    assert ckpt["config"]["visibility_aware"] is False
+
+    out2 = tmp_path / "run_visibility"
+    cmd2 = [sys.executable, str(Path(__file__).parents[1] / "train_real.py"),
+           "--data", str(data), "--out", str(out2), "--cpu", "--epochs", "1", "--batch-size", "2",
+           "--visibility-aware"]
+    result2 = subprocess.run(cmd2, capture_output=True, text=True, timeout=60)
+    assert result2.returncode == 0, result2.stderr
+    ckpt2 = torch.load(out2 / "last.pt", map_location="cpu", weights_only=True)
+    assert ckpt2["config"]["visibility_aware"] is True
