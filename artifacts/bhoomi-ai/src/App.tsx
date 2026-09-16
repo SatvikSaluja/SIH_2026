@@ -1,3 +1,4 @@
+import GeoVlmSentinelModule from "./components/GeoVlmSentinelModule";
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { useState, useEffect, useRef } from 'react';
 import { Link, Route, Switch, useLocation, Router as WouterRouter } from 'wouter';
@@ -84,6 +85,7 @@ const nav = [
   { href: '/', label: 'Command center', icon: Radio },
   { href: '/ingestion', label: 'Inference studio', icon: UploadCloud },
   { href: '/topology', label: 'Topology', icon: Network },
+  { href: '/sentinel', label: 'Geo-VLM Sentinel', icon: Brain },
   { href: '/changes', label: 'Change detection', icon: Layers3 },
   { href: '/field', label: 'Field verification', icon: MapPinned },
   { href: '/exports', label: 'Export center', icon: ArrowDownToLine },
@@ -1838,7 +1840,7 @@ function Usage({ label, value, suffix, percent }: { label: string; value: string
 
 function AppRouter() {
   const [location] = useLocation();
-  return <ErrorBoundary resetKey={location}><Shell><Switch><Route path="/" component={Dashboard} /><Route path="/ingestion" component={Ingestion} /><Route path="/topology" component={Topology} /><Route path="/changes" component={Changes} /><Route path="/field" component={Field} /><Route path="/exports" component={Exports} /><Route path="/billing" component={Billing} /><Route component={NotFound} /></Switch></Shell></ErrorBoundary>;
+  return <ErrorBoundary resetKey={location}><Shell><Switch><Route path="/" component={Dashboard} /><Route path="/ingestion" component={Ingestion} /><Route path="/topology" component={Topology} /><Route path="/sentinel" component={GeoVlmSentinelModule} /><Route path="/changes" component={Changes} /><Route path="/field" component={Field} /><Route path="/exports" component={Exports} /><Route path="/billing" component={Billing} /><Route component={NotFound} /></Switch></Shell></ErrorBoundary>;
 }
 
 export default function App() {

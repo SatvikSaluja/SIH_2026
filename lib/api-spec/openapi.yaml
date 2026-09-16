@@ -8,6 +8,8 @@ servers:
   - url: /api
     description: Base API path
 tags:
+  - name: sentinel
+    description: Evidence-first rural survey analysis operations
   - name: health
     description: Health operations
   - name: command-center
@@ -203,10 +205,134 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ExportJob"
+  /sentinel/overview:
+    get:
+      operationId: getSentinelOverview
+      tags: [sentinel]
+      summary: Get Sentinel workspace overview
+      responses:
+        "200":
+          description: Current workspace summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SentinelOverview"
+  /sentinel/analyses:
+    get:
+      operationId: listAnalyses
+      tags: [sentinel]
+      summary: List recent media analyses
+      responses:
+        "200":
+          description: Recent analyses
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Analysis"
+    post:
+      operationId: createAnalysis
+      tags: [sentinel]
+      summary: Save an analysis record
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AnalysisInput"
+      responses:
+        "201":
+          description: Saved analysis
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Analysis"
+  /sentinel/analyze-media:
+    post:
+      operationId: analyzeMedia
+      tags: [sentinel]
+      summary: Analyze uploaded image or sampled video frames
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MultimodalAnalysisInput"
+      responses:
+        "201":
+          description: AI-generated analysis with linked evidence
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AnalysisDetail"
+        "400":
+          description: Invalid media payload
+        "503":
+          description: Multimodal provider unavailable
+  /sentinel/analyses/{analysisId}:
+    get:
+      operationId: getAnalysis
+      tags: [sentinel]
+      summary: Get an analysis with linked evidence
+      parameters:
+        - $ref: "#/components/parameters/AnalysisId"
+      responses:
+        "200":
+          description: Analysis detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AnalysisDetail"
+        "404":
+          description: Analysis not found
+    patch:
+      operationId: verifyAnalysis
+      tags: [sentinel]
+      summary: Record a human verification decision
+      parameters:
+        - $ref: "#/components/parameters/AnalysisId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VerificationInput"
+      responses:
+        "200":
+          description: Updated analysis
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Analysis"
+        "404":
+          description: Analysis not found
+  /sentinel/analyses/{analysisId}/report:
+    get:
+      operationId: getAnalysisReport
+      tags: [sentinel]
+      summary: Get a preliminary evidence report
+      parameters:
+        - $ref: "#/components/parameters/AnalysisId"
+      responses:
+        "200":
+          description: Report payload
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AnalysisReport"
+        "404":
+          description: Analysis not found
 components:
   parameters:
     ParcelId:
       name: id
+      in: path
+      required: true
+      schema:
+        type: string
+    AnalysisId:
+      name: analysisId
       in: path
       required: true
       schema:
@@ -340,4 +466,234 @@ components:
         status: { type: string }
         createdAt: { type: string }
         fileName: { type: string }
+
+
+    SentinelOverview:
+      type: object
+      required:
+        - totalAnalyses
+        - pendingReview
+        - verified
+        - needsAttention
+        - latestAnalysis
+      properties:
+        totalAnalyses:
+          type: integer
+        pendingReview:
+          type: integer
+        verified:
+          type: integer
+        needsAttention:
+          type: integer
+        latestAnalysis:
+          anyOf:
+            - $ref: "#/components/schemas/Analysis"
+            - type: "null"
+    Analysis:
+      type: object
+      required:
+        - id
+        - title
+        - sourceType
+        - sourceName
+        - status
+        - createdAt
+        - observationCount
+        - verifiedObservationCount
+        - hasGeospatialMetadata
+        - captureDate
+        - modelLabel
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        sourceType:
+          type: string
+          enum: [image, video]
+        sourceName:
+          type: string
+        status:
+          type: string
+          enum: [processing, needs_review, verified, needs_attention]
+        createdAt:
+          type: string
+        observationCount:
+          type: integer
+        verifiedObservationCount:
+          type: integer
+        hasGeospatialMetadata:
+          type: boolean
+        captureDate:
+          type: ["string", "null"]
+        modelLabel:
+          type: string
+    AnalysisInput:
+      type: object
+      required:
+        - title
+        - sourceType
+        - sourceName
+        - status
+        - observationCount
+        - hasGeospatialMetadata
+        - captureDate
+        - modelLabel
+      properties:
+        title:
+          type: string
+        sourceType:
+          type: string
+          enum: [image, video]
+        sourceName:
+          type: string
+        status:
+          type: string
+          enum: [processing, needs_review, verified, needs_attention]
+        observationCount:
+          type: integer
+        hasGeospatialMetadata:
+          type: boolean
+        captureDate:
+          type: ["string", "null"]
+        modelLabel:
+          type: string
+        observations:
+          type: array
+          items:
+            $ref: "#/components/schemas/ObservationInput"
+    MultimodalAnalysisInput:
+      type: object
+      required:
+        - title
+        - sourceType
+        - sourceName
+        - hasGeospatialMetadata
+        - captureDate
+        - mediaData
+        - mediaMimeType
+      properties:
+        title:
+          type: string
+        sourceType:
+          type: string
+          enum: [image, video]
+        sourceName:
+          type: string
+        hasGeospatialMetadata:
+          type: boolean
+        captureDate:
+          type: ["string", "null"]
+        mediaData:
+          type: string
+          description: Base64-encoded image or representative media payload without the data URI prefix.
+        mediaMimeType:
+          type: string
+        frames:
+          type: array
+          items:
+            $ref: "#/components/schemas/MediaFrameInput"
+    MediaFrameInput:
+      type: object
+      required:
+        - data
+        - mimeType
+        - timestampSeconds
+      properties:
+        data:
+          type: string
+        mimeType:
+          type: string
+        timestampSeconds:
+          type: number
+    Observation:
+      type: object
+      required:
+        - id
+        - label
+        - category
+        - confidence
+        - reviewStatus
+        - evidenceNote
+        - timestampSeconds
+        - sourceMedia
+      properties:
+        id:
+          type: string
+        label:
+          type: string
+        category:
+          type: string
+        confidence:
+          type: number
+        reviewStatus:
+          type: string
+          enum: [unreviewed, confirmed, dismissed]
+        evidenceNote:
+          type: string
+        timestampSeconds:
+          type: ["number", "null"]
+        sourceMedia:
+          type: string
+    ObservationInput:
+      type: object
+      required:
+        - label
+        - category
+        - confidence
+        - reviewStatus
+        - evidenceNote
+        - timestampSeconds
+        - sourceMedia
+      properties:
+        label:
+          type: string
+        category:
+          type: string
+        confidence:
+          type: number
+        reviewStatus:
+          type: string
+          enum: [unreviewed, confirmed, dismissed]
+        evidenceNote:
+          type: string
+        timestampSeconds:
+          type: ["number", "null"]
+        sourceMedia:
+          type: string
+    AnalysisDetail:
+      allOf:
+        - $ref: "#/components/schemas/Analysis"
+        - type: object
+          required:
+            - observations
+          properties:
+            observations:
+              type: array
+              items:
+                $ref: "#/components/schemas/Observation"
+    VerificationInput:
+      type: object
+      required:
+        - status
+      properties:
+        status:
+          type: string
+          enum: [needs_review, verified, needs_attention]
+    AnalysisReport:
+      type: object
+      required:
+        - generatedAt
+        - title
+        - disclaimer
+        - analysis
+      properties:
+        generatedAt:
+          type: string
+        title:
+          type: string
+        disclaimer:
+          type: string
+        analysis:
+          $ref: "#/components/schemas/AnalysisDetail"
 

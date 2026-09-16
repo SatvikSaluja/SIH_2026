@@ -20,18 +20,25 @@ import type {
 } from '@tanstack/react-query';
 
 import type {
+  Analysis,
+  AnalysisDetail,
+  AnalysisInput,
+  AnalysisReport,
   ChangeDetection,
   DashboardSummary,
   ExportInput,
   ExportJob,
   HealthStatus,
   ListParcelsParams,
+  MultimodalAnalysisInput,
   Parcel,
   ParcelUpdate,
   ProcessingRun,
   ProcessingRunInput,
   Region,
-  TopologyReport
+  SentinelOverview,
+  TopologyReport,
+  VerificationInput
 } from './api.schemas';
 
 import { customFetch } from '../custom-fetch';
@@ -1020,4 +1027,577 @@ export const useCreateExport = <TError = ErrorType<unknown>,
       > => {
       return useMutation(getCreateExportMutationOptions(options));
     }
+
+export const getGetSentinelOverviewUrl = () => {
+
+
+
+
+  return `/api/sentinel/overview`
+}
+
+/**
+ * @summary Get Sentinel workspace overview
+ */
+export const getSentinelOverview = async ( options?: Parameters<typeof customFetch>[1]): Promise<SentinelOverview> => {
+
+  return customFetch<SentinelOverview>(getGetSentinelOverviewUrl(),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getGetSentinelOverviewQueryKey = () => {
+    return [
+    `/api/sentinel/overview`
+    ] as const;
+    }
+
+
+export const getGetSentinelOverviewQueryOptions = <TData = Awaited<ReturnType<typeof getSentinelOverview>>, TError = ErrorType<unknown>>( options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getSentinelOverview>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetSentinelOverviewQueryKey();
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getSentinelOverview>>> = ({ signal }) => getSentinelOverview({ signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getSentinelOverview>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type GetSentinelOverviewQueryResult = NonNullable<Awaited<ReturnType<typeof getSentinelOverview>>>
+export type GetSentinelOverviewQueryError = ErrorType<unknown>
+
+
+/**
+ * @summary Get Sentinel workspace overview
+ */
+
+export function useGetSentinelOverview<TData = Awaited<ReturnType<typeof getSentinelOverview>>, TError = ErrorType<unknown>>(
+  options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getSentinelOverview>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getGetSentinelOverviewQueryOptions(options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
+
+export const getListAnalysesUrl = () => {
+
+
+
+
+  return `/api/sentinel/analyses`
+}
+
+/**
+ * @summary List recent media analyses
+ */
+export const listAnalyses = async ( options?: Parameters<typeof customFetch>[1]): Promise<Analysis[]> => {
+
+  return customFetch<Analysis[]>(getListAnalysesUrl(),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getListAnalysesQueryKey = () => {
+    return [
+    `/api/sentinel/analyses`
+    ] as const;
+    }
+
+
+export const getListAnalysesQueryOptions = <TData = Awaited<ReturnType<typeof listAnalyses>>, TError = ErrorType<unknown>>( options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof listAnalyses>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getListAnalysesQueryKey();
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof listAnalyses>>> = ({ signal }) => listAnalyses({ signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof listAnalyses>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type ListAnalysesQueryResult = NonNullable<Awaited<ReturnType<typeof listAnalyses>>>
+export type ListAnalysesQueryError = ErrorType<unknown>
+
+
+/**
+ * @summary List recent media analyses
+ */
+
+export function useListAnalyses<TData = Awaited<ReturnType<typeof listAnalyses>>, TError = ErrorType<unknown>>(
+  options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof listAnalyses>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getListAnalysesQueryOptions(options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
+
+export const getCreateAnalysisUrl = () => {
+
+
+
+
+  return `/api/sentinel/analyses`
+}
+
+/**
+ * @summary Save an analysis record
+ */
+export const createAnalysis = async (analysisInput: AnalysisInput, options?: Parameters<typeof customFetch>[1]): Promise<Analysis> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+return customFetch<Analysis>(getCreateAnalysisUrl(),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(analysisInput)
+  }
+);}
+
+
+
+
+
+export const getCreateAnalysisMutationKey = () => ['createAnalysis'] as const;
+
+export const getCreateAnalysisMutationOptions = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof createAnalysis>>, TError,CreateAnalysisMutationVariables, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof createAnalysis>>, TError,CreateAnalysisMutationVariables, TContext> => {
+
+const mutationKey = getCreateAnalysisMutationKey();
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof createAnalysis>>, CreateAnalysisMutationVariables> = (props) => {
+          const {data} = props ?? {};
+
+          return  createAnalysis(data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type CreateAnalysisMutationResult = NonNullable<Awaited<ReturnType<typeof createAnalysis>>>
+    export type CreateAnalysisMutationBody = BodyType<AnalysisInput>
+    export type CreateAnalysisMutationError = ErrorType<unknown>
+    export type CreateAnalysisMutationVariables = {data: BodyType<AnalysisInput>}
+
+    /**
+ * @summary Save an analysis record
+ */
+export const useCreateAnalysis = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof createAnalysis>>, TError,CreateAnalysisMutationVariables, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof createAnalysis>>,
+        TError,
+        CreateAnalysisMutationVariables,
+        TContext
+      > => {
+      return useMutation(getCreateAnalysisMutationOptions(options));
+    }
+
+export const getAnalyzeMediaUrl = () => {
+
+
+
+
+  return `/api/sentinel/analyze-media`
+}
+
+/**
+ * @summary Analyze uploaded image or sampled video frames
+ */
+export const analyzeMedia = async (multimodalAnalysisInput: MultimodalAnalysisInput, options?: Parameters<typeof customFetch>[1]): Promise<AnalysisDetail> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+return customFetch<AnalysisDetail>(getAnalyzeMediaUrl(),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(multimodalAnalysisInput)
+  }
+);}
+
+
+
+
+
+export const getAnalyzeMediaMutationKey = () => ['analyzeMedia'] as const;
+
+export const getAnalyzeMediaMutationOptions = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof analyzeMedia>>, TError,AnalyzeMediaMutationVariables, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof analyzeMedia>>, TError,AnalyzeMediaMutationVariables, TContext> => {
+
+const mutationKey = getAnalyzeMediaMutationKey();
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof analyzeMedia>>, AnalyzeMediaMutationVariables> = (props) => {
+          const {data} = props ?? {};
+
+          return  analyzeMedia(data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type AnalyzeMediaMutationResult = NonNullable<Awaited<ReturnType<typeof analyzeMedia>>>
+    export type AnalyzeMediaMutationBody = BodyType<MultimodalAnalysisInput>
+    export type AnalyzeMediaMutationError = ErrorType<void>
+    export type AnalyzeMediaMutationVariables = {data: BodyType<MultimodalAnalysisInput>}
+
+    /**
+ * @summary Analyze uploaded image or sampled video frames
+ */
+export const useAnalyzeMedia = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof analyzeMedia>>, TError,AnalyzeMediaMutationVariables, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof analyzeMedia>>,
+        TError,
+        AnalyzeMediaMutationVariables,
+        TContext
+      > => {
+      return useMutation(getAnalyzeMediaMutationOptions(options));
+    }
+
+export const getGetAnalysisUrl = (analysisId: string,) => {
+
+
+
+
+  return `/api/sentinel/analyses/${analysisId}`
+}
+
+/**
+ * @summary Get an analysis with linked evidence
+ */
+export const getAnalysis = async (analysisId: string, options?: Parameters<typeof customFetch>[1]): Promise<AnalysisDetail> => {
+
+  return customFetch<AnalysisDetail>(getGetAnalysisUrl(analysisId),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getGetAnalysisQueryKey = (analysisId: string,) => {
+    return [
+    `/api/sentinel/analyses/${analysisId}`
+    ] as const;
+    }
+
+
+export const getGetAnalysisQueryOptions = <TData = Awaited<ReturnType<typeof getAnalysis>>, TError = ErrorType<void>>(analysisId: string, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getAnalysis>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetAnalysisQueryKey(analysisId);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getAnalysis>>> = ({ signal }) => getAnalysis(analysisId, { signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, enabled: analysisId !== null && analysisId !== undefined, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getAnalysis>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type GetAnalysisQueryResult = NonNullable<Awaited<ReturnType<typeof getAnalysis>>>
+export type GetAnalysisQueryError = ErrorType<void>
+
+
+/**
+ * @summary Get an analysis with linked evidence
+ */
+
+export function useGetAnalysis<TData = Awaited<ReturnType<typeof getAnalysis>>, TError = ErrorType<void>>(
+ analysisId: string, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getAnalysis>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getGetAnalysisQueryOptions(analysisId,options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
+
+export const getVerifyAnalysisUrl = (analysisId: string,) => {
+
+
+
+
+  return `/api/sentinel/analyses/${analysisId}`
+}
+
+/**
+ * @summary Record a human verification decision
+ */
+export const verifyAnalysis = async (analysisId: string,
+    verificationInput: VerificationInput, options?: Parameters<typeof customFetch>[1]): Promise<Analysis> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+return customFetch<Analysis>(getVerifyAnalysisUrl(analysisId),
+  {
+    ...options,
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(verificationInput)
+  }
+);}
+
+
+
+
+
+export const getVerifyAnalysisMutationKey = () => ['verifyAnalysis'] as const;
+
+export const getVerifyAnalysisMutationOptions = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof verifyAnalysis>>, TError,VerifyAnalysisMutationVariables, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof verifyAnalysis>>, TError,VerifyAnalysisMutationVariables, TContext> => {
+
+const mutationKey = getVerifyAnalysisMutationKey();
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof verifyAnalysis>>, VerifyAnalysisMutationVariables> = (props) => {
+          const {analysisId,data} = props ?? {};
+
+          return  verifyAnalysis(analysisId,data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type VerifyAnalysisMutationResult = NonNullable<Awaited<ReturnType<typeof verifyAnalysis>>>
+    export type VerifyAnalysisMutationBody = BodyType<VerificationInput>
+    export type VerifyAnalysisMutationError = ErrorType<void>
+    export type VerifyAnalysisMutationVariables = {analysisId: string;data: BodyType<VerificationInput>}
+
+    /**
+ * @summary Record a human verification decision
+ */
+export const useVerifyAnalysis = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof verifyAnalysis>>, TError,VerifyAnalysisMutationVariables, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof verifyAnalysis>>,
+        TError,
+        VerifyAnalysisMutationVariables,
+        TContext
+      > => {
+      return useMutation(getVerifyAnalysisMutationOptions(options));
+    }
+
+export const getGetAnalysisReportUrl = (analysisId: string,) => {
+
+
+
+
+  return `/api/sentinel/analyses/${analysisId}/report`
+}
+
+/**
+ * @summary Get a preliminary evidence report
+ */
+export const getAnalysisReport = async (analysisId: string, options?: Parameters<typeof customFetch>[1]): Promise<AnalysisReport> => {
+
+  return customFetch<AnalysisReport>(getGetAnalysisReportUrl(analysisId),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getGetAnalysisReportQueryKey = (analysisId: string,) => {
+    return [
+    `/api/sentinel/analyses/${analysisId}/report`
+    ] as const;
+    }
+
+
+export const getGetAnalysisReportQueryOptions = <TData = Awaited<ReturnType<typeof getAnalysisReport>>, TError = ErrorType<void>>(analysisId: string, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getAnalysisReport>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetAnalysisReportQueryKey(analysisId);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getAnalysisReport>>> = ({ signal }) => getAnalysisReport(analysisId, { signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, enabled: analysisId !== null && analysisId !== undefined, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getAnalysisReport>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type GetAnalysisReportQueryResult = NonNullable<Awaited<ReturnType<typeof getAnalysisReport>>>
+export type GetAnalysisReportQueryError = ErrorType<void>
+
+
+/**
+ * @summary Get a preliminary evidence report
+ */
+
+export function useGetAnalysisReport<TData = Awaited<ReturnType<typeof getAnalysisReport>>, TError = ErrorType<void>>(
+ analysisId: string, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getAnalysisReport>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getGetAnalysisReportQueryOptions(analysisId,options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
 

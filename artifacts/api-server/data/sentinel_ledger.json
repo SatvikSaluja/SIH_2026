@@ -1,0 +1,144 @@
+[
+  {
+    "id": "analysis-demo-001",
+    "title": "Northfield • preliminary survey review",
+    "sourceType": "image",
+    "sourceName": "northfield-orthomosaic.jpg",
+    "status": "needs_attention",
+    "createdAt": "2026-09-16T09:24:00.000Z",
+    "observationCount": 3,
+    "verifiedObservationCount": 0,
+    "hasGeospatialMetadata": true,
+    "captureDate": "2026-09-16",
+    "modelLabel": "Geo-VLM Sentinel • Aerial Vision Engine",
+    "observations": [
+      {
+        "id": "analysis-demo-001-obs-1",
+        "label": "Built structure",
+        "category": "structure",
+        "confidence": 0.87,
+        "reviewStatus": "unreviewed",
+        "evidenceNote": "Rectilinear roof-like form detected in the source frame. Height profile ~4.2m.",
+        "timestampSeconds": null,
+        "sourceMedia": "northfield-orthomosaic.jpg",
+        "boundingBox": [
+          150,
+          200,
+          420,
+          520
+        ]
+      },
+      {
+        "id": "analysis-demo-001-obs-2",
+        "label": "Access corridor",
+        "category": "road",
+        "confidence": 0.74,
+        "reviewStatus": "unreviewed",
+        "evidenceNote": "Linear cleared corridor visible along western boundary edge.",
+        "timestampSeconds": null,
+        "sourceMedia": "northfield-orthomosaic.jpg",
+        "boundingBox": [
+          480,
+          120,
+          850,
+          310
+        ]
+      },
+      {
+        "id": "analysis-demo-001-obs-3",
+        "label": "Unregistered boundary hedge",
+        "category": "boundary",
+        "confidence": 0.61,
+        "reviewStatus": "unreviewed",
+        "evidenceNote": "Dense hedge vegetation break along field perimeter; verify against survey notes.",
+        "timestampSeconds": null,
+        "sourceMedia": "northfield-orthomosaic.jpg",
+        "boundingBox": [
+          220,
+          600,
+          680,
+          880
+        ]
+      }
+    ]
+  },
+  {
+    "id": "analysis-demo-002",
+    "title": "Kandhamal valley flight 03",
+    "sourceType": "video",
+    "sourceName": "KND-12_flight_03.mp4",
+    "status": "verified",
+    "createdAt": "2026-09-15T14:32:00.000Z",
+    "observationCount": 4,
+    "verifiedObservationCount": 4,
+    "hasGeospatialMetadata": true,
+    "captureDate": "2026-09-15",
+    "modelLabel": "Geo-VLM Sentinel • Flight Analyzer",
+    "observations": [
+      {
+        "id": "analysis-demo-002-obs-1",
+        "label": "Standing water body",
+        "category": "hydrology",
+        "confidence": 0.94,
+        "reviewStatus": "confirmed",
+        "evidenceNote": "Irrigation channel overflow along terrace embankment.",
+        "timestampSeconds": 12,
+        "sourceMedia": "KND-12_flight_03.mp4",
+        "boundingBox": [
+          300,
+          150,
+          580,
+          450
+        ]
+      },
+      {
+        "id": "analysis-demo-002-obs-2",
+        "label": "Paved access track",
+        "category": "road",
+        "confidence": 0.89,
+        "reviewStatus": "confirmed",
+        "evidenceNote": "Primary block entrance track connecting village road.",
+        "timestampSeconds": 28,
+        "sourceMedia": "KND-12_flight_03.mp4",
+        "boundingBox": [
+          100,
+          500,
+          400,
+          900
+        ]
+      },
+      {
+        "id": "analysis-demo-002-obs-3",
+        "label": "Canopy crop health variance",
+        "category": "agriculture",
+        "confidence": 0.76,
+        "reviewStatus": "confirmed",
+        "evidenceNote": "Uniform greenness index across parcel 14-B.",
+        "timestampSeconds": 45,
+        "sourceMedia": "KND-12_flight_03.mp4",
+        "boundingBox": [
+          600,
+          300,
+          900,
+          750
+        ]
+      },
+      {
+        "id": "analysis-demo-002-obs-4",
+        "label": "Pump house facility",
+        "category": "structure",
+        "confidence": 0.82,
+        "reviewStatus": "confirmed",
+        "evidenceNote": "Concrete pump house shed near river junction.",
+        "timestampSeconds": 64,
+        "sourceMedia": "KND-12_flight_03.mp4",
+        "boundingBox": [
+          200,
+          250,
+          380,
+          420
+        ]
+      }
+    ]
+  }
+]

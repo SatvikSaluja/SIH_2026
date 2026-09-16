@@ -1,0 +1,104 @@
+import pytest
+from shapely.geometry import Point, Polygon, box
+
+from geocadastra.core.crs import CRSMismatchError, Geom, everest_kalianpur_to_wgs84_utm, get_transformer
+
+
+def test_geom_carries_its_crs():
+    g = Geom(Point(1, 2), "EPSG:32643")
+    assert g.crs == "EPSG:32643"
+    assert g.geom.x == 1
+    assert g.geom.y == 2
+
+
+def test_same_crs_ops_work():
+    a = Geom(box(0, 0, 10, 10), "EPSG:32643")
+    b = Geom(box(5, 5, 15, 15), "EPSG:32643")
+
+    inter = a.intersection(b)
+    assert inter.crs == "EPSG:32643"
+    assert inter.geom.area == 25.0
+
+    union = a.union(b)
+    assert union.crs == "EPSG:32643"
+    assert union.geom.area == 175.0  # 100 + 100 - 25 overlap
+
+    diff = a.difference(b)
+    assert diff.crs == "EPSG:32643"
+    assert diff.geom.area == 75.0  # a minus the overlap
+
+
+@pytest.mark.parametrize("op", ["intersection", "union", "difference"])
+def test_overlay_ops_snap_to_the_precision_grid(op):
+    """Regression: Geom.intersection/union/difference used to call raw
+    shapely overlay ops with no grid_size -- this project's own canonical
+    "every geometry crossing a module boundary should be a Geom" wrapper
+    had skipped the precision-grid fix this codebase applies everywhere
+    else (a real, reproduced wrong-answer bug from exactly this omission
+    is documented in synth/generator.py's own GRID comment). Two buffered
+    circles give a boundary with many non-round coordinates; if grid_size
+    is really being applied, every output coordinate is an exact multiple
+    of the grid (1e-3)."""
+    a = Geom(Point(0, 0).buffer(5, quad_segs=6), "EPSG:32643")
+    b = Geom(Point(3, 3).buffer(5, quad_segs=6), "EPSG:32643")
+    result = getattr(a, op)(b)
+    coords = list(result.geom.exterior.coords) if result.geom.geom_type == "Polygon" else list(result.geom.coords)
+    for x, y in coords:
+        assert x == pytest.approx(round(x, 3), abs=1e-9)
+        assert y == pytest.approx(round(y, 3), abs=1e-9)
+
+
+@pytest.mark.parametrize("op", ["intersection", "union", "difference", "distance"])
+def test_mismatched_crs_raises_instead_of_silently_coercing(op):
+    a = Geom(box(0, 0, 10, 10), "EPSG:32643")
+    b = Geom(box(5, 5, 15, 15), "EPSG:4326")
+    with pytest.raises(CRSMismatchError):
+        getattr(a, op)(b)
+
+
+def test_transform_to_reprojects_and_updates_crs():
+    # a point in WGS84 lon/lat near Nagpur, India (falls in UTM zone 43N / EPSG:32643)
+    g = Geom(Point(79.08, 21.14), "EPSG:4326")
+    reprojected = g.transform_to("EPSG:32643")
+    assert reprojected.crs == "EPSG:32643"
+    # UTM 43N easting/northing should be large positive metres, not lon/lat-scale
+    assert reprojected.geom.x > 100_000
+    assert reprojected.geom.y > 1_000_000
+
+
+def test_transform_to_same_crs_is_a_cheap_noop():
+    g = Geom(Point(1, 2), "EPSG:32643")
+    same = g.transform_to("EPSG:32643")
+    assert same.geom.x == 1 and same.geom.y == 2
+    assert same.crs == "EPSG:32643"
+
+
+def test_transformer_is_cached():
+    t1 = get_transformer("EPSG:4326", "EPSG:32643")
+    t2 = get_transformer("EPSG:4326", "EPSG:32643")
+    assert t1 is t2
+
+
+def test_everest_kalianpur_stub_documents_the_gap_instead_of_faking_it():
+    with pytest.raises(NotImplementedError, match="(?i)geoid|orthometric|zone"):
+        everest_kalianpur_to_wgs84_utm("EPSG:24379")
+
+
+def test_geom_fields_cannot_be_reassigned():
+    g = Geom(Point(1, 2), "EPSG:32643")
+    with pytest.raises(Exception):
+        g.crs = "EPSG:4326"
+
+
+def test_geom_equality_and_hash_are_by_value_not_identity():
+    """Two separately-built Geoms wrapping coordinate-equal geometries are
+    `==` and hash-equal (ordinary frozen-dataclass behaviour, inherited from
+    shapely's own value-based geometry equality) -- documented here because
+    nothing in this codebase currently uses a Geom as a dict/set key, and
+    anything that starts doing so should mean to collapse coincidentally-
+    equal-but-logically-distinct geometries, not assume identity semantics."""
+    a = Geom(Point(1, 2), "EPSG:32643")
+    b = Geom(Point(1, 2), "EPSG:32643")
+    assert a is not b
+    assert a == b
+    assert len({a, b}) == 1

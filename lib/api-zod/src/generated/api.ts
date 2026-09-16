@@ -230,3 +230,225 @@ export const CreateExportResponse = zod.object({
 })
 
 
+/**
+ * @summary Get Sentinel workspace overview
+ */
+export const GetSentinelOverviewResponse = zod.object({
+  "totalAnalyses": zod.number().int(),
+  "pendingReview": zod.number().int(),
+  "verified": zod.number().int(),
+  "needsAttention": zod.number().int(),
+  "latestAnalysis": zod.union([zod.object({
+  "id": zod.string(),
+  "title": zod.string(),
+  "sourceType": zod.enum(['image', 'video']),
+  "sourceName": zod.string(),
+  "status": zod.enum(['processing', 'needs_review', 'verified', 'needs_attention']),
+  "createdAt": zod.string(),
+  "observationCount": zod.number().int(),
+  "verifiedObservationCount": zod.number().int(),
+  "hasGeospatialMetadata": zod.boolean(),
+  "captureDate": zod.string().nullable(),
+  "modelLabel": zod.string()
+}),zod.null()])
+})
+
+
+/**
+ * @summary List recent media analyses
+ */
+export const ListAnalysesResponseItem = zod.object({
+  "id": zod.string(),
+  "title": zod.string(),
+  "sourceType": zod.enum(['image', 'video']),
+  "sourceName": zod.string(),
+  "status": zod.enum(['processing', 'needs_review', 'verified', 'needs_attention']),
+  "createdAt": zod.string(),
+  "observationCount": zod.number().int(),
+  "verifiedObservationCount": zod.number().int(),
+  "hasGeospatialMetadata": zod.boolean(),
+  "captureDate": zod.string().nullable(),
+  "modelLabel": zod.string()
+})
+export const ListAnalysesResponse = zod.array(ListAnalysesResponseItem)
+
+
+/**
+ * @summary Save an analysis record
+ */
+export const CreateAnalysisBody = zod.object({
+  "title": zod.string(),
+  "sourceType": zod.enum(['image', 'video']),
+  "sourceName": zod.string(),
+  "status": zod.enum(['processing', 'needs_review', 'verified', 'needs_attention']),
+  "observationCount": zod.number().int(),
+  "hasGeospatialMetadata": zod.boolean(),
+  "captureDate": zod.string().nullable(),
+  "modelLabel": zod.string(),
+  "observations": zod.array(zod.object({
+  "label": zod.string(),
+  "category": zod.string(),
+  "confidence": zod.number(),
+  "reviewStatus": zod.enum(['unreviewed', 'confirmed', 'dismissed']),
+  "evidenceNote": zod.string(),
+  "timestampSeconds": zod.number().nullable(),
+  "sourceMedia": zod.string()
+})).optional()
+})
+
+export const CreateAnalysisResponse = zod.object({
+  "id": zod.string(),
+  "title": zod.string(),
+  "sourceType": zod.enum(['image', 'video']),
+  "sourceName": zod.string(),
+  "status": zod.enum(['processing', 'needs_review', 'verified', 'needs_attention']),
+  "createdAt": zod.string(),
+  "observationCount": zod.number().int(),
+  "verifiedObservationCount": zod.number().int(),
+  "hasGeospatialMetadata": zod.boolean(),
+  "captureDate": zod.string().nullable(),
+  "modelLabel": zod.string()
+})
+
+
+/**
+ * @summary Analyze uploaded image or sampled video frames
+ */
+export const AnalyzeMediaBody = zod.object({
+  "title": zod.string(),
+  "sourceType": zod.enum(['image', 'video']),
+  "sourceName": zod.string(),
+  "hasGeospatialMetadata": zod.boolean(),
+  "captureDate": zod.string().nullable(),
+  "mediaData": zod.string().describe('Base64-encoded image or representative media payload without the data URI prefix.'),
+  "mediaMimeType": zod.string(),
+  "frames": zod.array(zod.object({
+  "data": zod.string(),
+  "mimeType": zod.string(),
+  "timestampSeconds": zod.number()
+})).optional()
+})
+
+export const AnalyzeMediaResponse = zod.object({
+  "id": zod.string(),
+  "title": zod.string(),
+  "sourceType": zod.enum(['image', 'video']),
+  "sourceName": zod.string(),
+  "status": zod.enum(['processing', 'needs_review', 'verified', 'needs_attention']),
+  "createdAt": zod.string(),
+  "observationCount": zod.number().int(),
+  "verifiedObservationCount": zod.number().int(),
+  "hasGeospatialMetadata": zod.boolean(),
+  "captureDate": zod.string().nullable(),
+  "modelLabel": zod.string()
+}).and(zod.object({
+  "observations": zod.array(zod.object({
+  "id": zod.string(),
+  "label": zod.string(),
+  "category": zod.string(),
+  "confidence": zod.number(),
+  "reviewStatus": zod.enum(['unreviewed', 'confirmed', 'dismissed']),
+  "evidenceNote": zod.string(),
+  "timestampSeconds": zod.number().nullable(),
+  "sourceMedia": zod.string()
+}))
+}))
+
+
+/**
+ * @summary Get an analysis with linked evidence
+ */
+export const GetAnalysisParams = zod.object({
+  "analysisId": zod.coerce.string()
+})
+
+export const GetAnalysisResponse = zod.object({
+  "id": zod.string(),
+  "title": zod.string(),
+  "sourceType": zod.enum(['image', 'video']),
+  "sourceName": zod.string(),
+  "status": zod.enum(['processing', 'needs_review', 'verified', 'needs_attention']),
+  "createdAt": zod.string(),
+  "observationCount": zod.number().int(),
+  "verifiedObservationCount": zod.number().int(),
+  "hasGeospatialMetadata": zod.boolean(),
+  "captureDate": zod.string().nullable(),
+  "modelLabel": zod.string()
+}).and(zod.object({
+  "observations": zod.array(zod.object({
+  "id": zod.string(),
+  "label": zod.string(),
+  "category": zod.string(),
+  "confidence": zod.number(),
+  "reviewStatus": zod.enum(['unreviewed', 'confirmed', 'dismissed']),
+  "evidenceNote": zod.string(),
+  "timestampSeconds": zod.number().nullable(),
+  "sourceMedia": zod.string()
+}))
+}))
+
+
+/**
+ * @summary Record a human verification decision
+ */
+export const VerifyAnalysisParams = zod.object({
+  "analysisId": zod.coerce.string()
+})
+
+export const VerifyAnalysisBody = zod.object({
+  "status": zod.enum(['needs_review', 'verified', 'needs_attention'])
+})
+
+export const VerifyAnalysisResponse = zod.object({
+  "id": zod.string(),
+  "title": zod.string(),
+  "sourceType": zod.enum(['image', 'video']),
+  "sourceName": zod.string(),
+  "status": zod.enum(['processing', 'needs_review', 'verified', 'needs_attention']),
+  "createdAt": zod.string(),
+  "observationCount": zod.number().int(),
+  "verifiedObservationCount": zod.number().int(),
+  "hasGeospatialMetadata": zod.boolean(),
+  "captureDate": zod.string().nullable(),
+  "modelLabel": zod.string()
+})
+
+
+/**
+ * @summary Get a preliminary evidence report
+ */
+export const GetAnalysisReportParams = zod.object({
+  "analysisId": zod.coerce.string()
+})
+
+export const GetAnalysisReportResponse = zod.object({
+  "generatedAt": zod.string(),
+  "title": zod.string(),
+  "disclaimer": zod.string(),
+  "analysis": zod.object({
+  "id": zod.string(),
+  "title": zod.string(),
+  "sourceType": zod.enum(['image', 'video']),
+  "sourceName": zod.string(),
+  "status": zod.enum(['processing', 'needs_review', 'verified', 'needs_attention']),
+  "createdAt": zod.string(),
+  "observationCount": zod.number().int(),
+  "verifiedObservationCount": zod.number().int(),
+  "hasGeospatialMetadata": zod.boolean(),
+  "captureDate": zod.string().nullable(),
+  "modelLabel": zod.string()
+}).and(zod.object({
+  "observations": zod.array(zod.object({
+  "id": zod.string(),
+  "label": zod.string(),
+  "category": zod.string(),
+  "confidence": zod.number(),
+  "reviewStatus": zod.enum(['unreviewed', 'confirmed', 'dismissed']),
+  "evidenceNote": zod.string(),
+  "timestampSeconds": zod.number().nullable(),
+  "sourceMedia": zod.string()
+}))
+}))
+})
+
+
