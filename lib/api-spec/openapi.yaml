@@ -382,15 +382,20 @@ components:
         tone: { type: string }
     Parcel:
       type: object
-      required: [id, ulpin, regionId, regionName, areaSqM, ownership, confidence, status, geometry, updatedAt]
+      # ownership/confidence are NOT in `required`: geocadastra (the real backend
+      # behind this contract as of the friend_project merge) has no ownership-
+      # status or per-parcel confidence-score concept. Returning a fabricated
+      # plausible value here was exactly the "no hardcoding" problem this merge
+      # was meant to fix -- null is the honest answer until a real source exists.
+      required: [id, ulpin, regionId, regionName, areaSqM, status, geometry, updatedAt]
       properties:
         id: { type: string }
-        ulpin: { type: string }
+        ulpin: { type: string, description: "geocadastra's own recorded_parcel_id -- not a real Indian ULPIN" }
         regionId: { type: string }
         regionName: { type: string }
         areaSqM: { type: number }
-        ownership: { type: string }
-        confidence: { type: number }
+        ownership: { type: string, nullable: true }
+        confidence: { type: number, nullable: true }
         status: { type: string }
         geometry:
           type: array
@@ -528,6 +533,8 @@ components:
           type: ["string", "null"]
         modelLabel:
           type: string
+        mediaData:
+          type: string
     AnalysisInput:
       type: object
       required:
@@ -635,6 +642,9 @@ components:
           type: ["number", "null"]
         sourceMedia:
           type: string
+        boundingBox:
+          type: array
+          items: { type: number }
     ObservationInput:
       type: object
       required:
@@ -661,6 +671,9 @@ components:
           type: ["number", "null"]
         sourceMedia:
           type: string
+        boundingBox:
+          type: array
+          items: { type: number }
     AnalysisDetail:
       allOf:
         - $ref: "#/components/schemas/Analysis"

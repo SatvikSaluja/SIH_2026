@@ -1,6 +1,6 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect } from 'react';
 import { X, Map as MapIcon, Table2, Search, Download, FileJson } from 'lucide-react';
-import { generateMicroParcels, ParcelProperties } from '../utils/parcelGenerator';
+import type { ParcelProperties } from '../utils/parcelGenerator';
 import { MicroParcelMap } from './MicroParcelMap';
 import { ParcelInventoryTable } from './ParcelInventoryTable';
 import type { FeatureCollection, Polygon } from 'geojson';
@@ -15,23 +15,54 @@ interface ParcelExplorerModalProps {
   };
 }
 
+interface ApiParcel {
+  ulpin: string;
+  areaSqM: number;
+  ownership: string | null;
+  confidence: number | null;
+  geometry: number[][];
+}
+
 export function ParcelExplorerModal({ isOpen, onClose, regionData }: ParcelExplorerModalProps) {
   const [viewMode, setViewMode] = useState<'map' | 'table'>('map');
   const [searchQuery, setSearchQuery] = useState('');
-  
-  // Memoize generated parcels so it doesn't regenerate on every render
-  const generatedGeoData = useMemo(() => {
-    if (!isOpen) return null;
-    
-    // Default to a central India bounding box if none provided
-    const bounds = regionData.bounds || [[18.0, 72.0], [28.0, 85.0]];
-    
-    return generateMicroParcels(
-      bounds as [[number, number], [number, number]], 
-      regionData.code || 'IN', 
-      300
-    );
-  }, [regionData.code, regionData.bounds, isOpen]);
+  const [generatedGeoData, setGeoData] = useState<FeatureCollection<Polygon, ParcelProperties> | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  // Real parcels from the geocadastra-backed /api/parcels endpoint --
+  // this used to call generateMicroParcels(), a fake-data generator (see
+  // parcelGenerator.ts's own comment on what it fabricated and why it's
+  // gone). ownership_status/confidence_score/owner_name are null here,
+  // honestly, rather than invented: geocadastra has no ownership or
+  // per-parcel confidence concept.
+  useEffect(() => {
+    if (!isOpen) return;
+    setError(null);
+    fetch(`/api/parcels?regionId=${encodeURIComponent(regionData.code)}`)
+      .then((res) => {
+        if (!res.ok) throw new Error(`/api/parcels -> ${res.status}`);
+        return res.json() as Promise<ApiParcel[]>;
+      })
+      .then((parcels) => {
+        setGeoData({
+          type: 'FeatureCollection',
+          features: parcels
+            .filter((p) => p.geometry.length >= 3)
+            .map((p, i) => ({
+              type: 'Feature',
+              geometry: { type: 'Polygon', coordinates: [p.geometry] },
+              properties: {
+                ulpin: p.ulpin,
+                area_sqm: p.areaSqM,
+                ownership_status: p.ownership,
+                confidence_score: p.confidence,
+                owner_name: null,
+              },
+            })),
+        });
+      })
+      .catch((e) => setError((e as Error).message));
+  }, [regionData.code, isOpen]);
 
   // Handle escape key to close
   useEffect(() => {
@@ -47,9 +78,12 @@ export function ParcelExplorerModal({ isOpen, onClose, regionData }: ParcelExplo
   const exportCSV = () => {
     if (!generatedGeoData) return;
     const headers = ['ULPIN', 'Owner Name', 'Area (sq.m)', 'Status', 'Confidence'];
+    // owner_name/status/confidence are genuinely null (not "not available"
+    // text baked into the value) whenever geocadastra has no real answer --
+    // rendered as empty CSV cells here rather than the literal string "null".
     const rows = generatedGeoData.features.map(f => {
       const p = f.properties;
-      return `${p.ulpin},"${p.owner_name}",${p.area_sqm},${p.ownership_status},${p.confidence_score}`;
+      return `${p.ulpin},"${p.owner_name ?? ''}",${p.area_sqm},${p.ownership_status ?? ''},${p.confidence_score ?? ''}`;
     });
     
     const csvContent = [headers.join(','), ...rows].join('\n');

@@ -28,7 +28,7 @@ from geoalchemy2.shape import from_shape, to_shape
 from pydantic import BaseModel, Field
 from shapely.affinity import affine_transform
 from shapely.geometry import Point, box
-from sqlalchemy import create_engine, select, text
+from sqlalchemy import create_engine, func, select, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from geocadastra.core.crs import Geom
@@ -253,6 +253,31 @@ def run(ward_job_id: int, session: Session = Depends(get_session), db_config: tu
     _get_ward_job_or_404(session, ward_job_id)
     db_url, schema = db_config
     return run_ward(session, db_url, schema, ward_job_id)
+
+
+@app.get("/wards")
+def list_wards(session: Session = Depends(get_session)):
+    """Every real ward job -- added for the friend_project merge's
+    dashboard/regions views, which need a "list all" capability this API
+    never had (every other endpoint here is scoped to one already-known
+    ward_job_id). Each entry's block/parcel counts and area come from the
+    same real state status()/parcels() already read, not a cache."""
+    jobs = session.execute(select(WardJob).order_by(WardJob.id)).scalars().all()
+    result = []
+    for job in jobs:
+        _state, blocks = ward_status(session, job.id)
+        n_parcels = session.execute(
+            select(func.count()).select_from(Face).join(IngestedBlock, IngestedBlock.block_id == Face.block_id)
+            .where(IngestedBlock.ward_job_id == job.id)
+        ).scalar_one()
+        params = job.params or {}
+        area_sqkm = (params.get("width", 0) * params.get("height", 0)) / 1e6
+        result.append({
+            "ward_job_id": job.id, "source": job.source, "status": _state,
+            "n_blocks": len(blocks), "n_parcels": int(n_parcels),
+            "area_sqkm": area_sqkm, "created_at": job.created_at.isoformat(),
+        })
+    return {"wards": result}
 
 
 @app.get("/wards/{ward_job_id}/status")

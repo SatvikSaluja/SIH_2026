@@ -25,7 +25,7 @@ export const GetDashboardResponse = zod.object({
   "parcelsExtracted": zod.number().int(),
   "topologyErrors": zod.number().int(),
   "encroachments": zod.number().int(),
-  "accuracyScore": zod.number(),
+  "accuracyScore": zod.number().nullable(),
   "activeRun": zod.union([zod.object({
   "id": zod.string(),
   "name": zod.string(),
@@ -75,8 +75,8 @@ export const ListParcelsResponseItem = zod.object({
   "regionId": zod.string(),
   "regionName": zod.string(),
   "areaSqM": zod.number(),
-  "ownership": zod.string(),
-  "confidence": zod.number(),
+  "ownership": zod.string().nullable(),
+  "confidence": zod.number().nullable(),
   "status": zod.string(),
   "geometry": zod.array(zod.array(zod.number())),
   "updatedAt": zod.string()
@@ -97,8 +97,8 @@ export const GetParcelResponse = zod.object({
   "regionId": zod.string(),
   "regionName": zod.string(),
   "areaSqM": zod.number(),
-  "ownership": zod.string(),
-  "confidence": zod.number(),
+  "ownership": zod.string().nullable(),
+  "confidence": zod.number().nullable(),
   "status": zod.string(),
   "geometry": zod.array(zod.array(zod.number())),
   "updatedAt": zod.string()
@@ -123,8 +123,8 @@ export const UpdateParcelResponse = zod.object({
   "regionId": zod.string(),
   "regionName": zod.string(),
   "areaSqM": zod.number(),
-  "ownership": zod.string(),
-  "confidence": zod.number(),
+  "ownership": zod.string().nullable(),
+  "confidence": zod.number().nullable(),
   "status": zod.string(),
   "geometry": zod.array(zod.array(zod.number())),
   "updatedAt": zod.string()
@@ -292,7 +292,8 @@ export const CreateAnalysisBody = zod.object({
   "reviewStatus": zod.enum(['unreviewed', 'confirmed', 'dismissed']),
   "evidenceNote": zod.string(),
   "timestampSeconds": zod.number().nullable(),
-  "sourceMedia": zod.string()
+  "sourceMedia": zod.string(),
+  "boundingBox": zod.tuple([zod.number(), zod.number(), zod.number(), zod.number()]).optional()
 })).optional()
 })
 
@@ -350,7 +351,8 @@ export const AnalyzeMediaResponse = zod.object({
   "reviewStatus": zod.enum(['unreviewed', 'confirmed', 'dismissed']),
   "evidenceNote": zod.string(),
   "timestampSeconds": zod.number().nullable(),
-  "sourceMedia": zod.string()
+  "sourceMedia": zod.string(),
+  "boundingBox": zod.tuple([zod.number(), zod.number(), zod.number(), zod.number()]).optional()
 }))
 }))
 
@@ -383,7 +385,8 @@ export const GetAnalysisResponse = zod.object({
   "reviewStatus": zod.enum(['unreviewed', 'confirmed', 'dismissed']),
   "evidenceNote": zod.string(),
   "timestampSeconds": zod.number().nullable(),
-  "sourceMedia": zod.string()
+  "sourceMedia": zod.string(),
+  "boundingBox": zod.tuple([zod.number(), zod.number(), zod.number(), zod.number()]).optional()
 }))
 }))
 
@@ -446,7 +449,8 @@ export const GetAnalysisReportResponse = zod.object({
   "reviewStatus": zod.enum(['unreviewed', 'confirmed', 'dismissed']),
   "evidenceNote": zod.string(),
   "timestampSeconds": zod.number().nullable(),
-  "sourceMedia": zod.string()
+  "sourceMedia": zod.string(),
+  "boundingBox": zod.tuple([zod.number(), zod.number(), zod.number(), zod.number()]).optional()
 }))
 }))
 })

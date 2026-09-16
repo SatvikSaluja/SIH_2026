@@ -28,8 +28,9 @@ interface RawObservation {
 }
 
 /**
- * Runs Gemini VLM analysis if GEMINI_API_KEY / GOOGLE_API_KEY is available in env.
- * Otherwise runs an intelligent Computer Vision feature extraction algorithm.
+ * Runs Gemini VLM analysis if GEMINI_API_KEY / GOOGLE_API_KEY is available
+ * in env. Otherwise returns an honest "not configured" result -- there is
+ * no real local vision engine to fall back to (see noProviderConfigured()).
  */
 export async function runMultimodalAnalysis(
   input: MultimodalRequest,
@@ -43,11 +44,11 @@ export async function runMultimodalAnalysis(
         return geminiResult;
       }
     } catch (err) {
-      console.warn("Gemini VLM API call failed, falling back to local vision engine:", err);
+      console.warn("Gemini VLM API call failed, returning an honest not-configured result:", err);
     }
   }
 
-  return generateDynamicCVAnalysis(input);
+  return noProviderConfigured(input);
 }
 
 function stripBase64(data: string): string {
@@ -212,53 +213,31 @@ async function callGeminiVLM(
   };
 }
 
-function generateDynamicCVAnalysis(
+/**
+ * No API key configured -- there is no real local vision engine, and this
+ * project's own stance (see geocadastra/api/advisory.py's ward_brief()) is
+ * that a missing capability returns an honest "not configured" state, not
+ * a plausible-looking fabricated result. The function this replaced
+ * (`generateDynamicCVAnalysis`) never looked at the uploaded image at
+ * all -- it cycled through 4 fixed labels by array index and computed
+ * "bounding boxes" from arithmetic on a loop counter, under a comment
+ * that called it "an intelligent Computer Vision feature extraction
+ * algorithm." Zero observations and a status that routes to human review
+ * is the honest answer until a real fallback model is wired in.
+ */
+function noProviderConfigured(
   input: MultimodalRequest,
 ): Omit<AnalysisDetail, "id" | "createdAt" | "verifiedObservationCount"> {
-  const frames = input.frames || [];
-  const isVideo = input.sourceType === "video";
-  const duration = input.durationSeconds || (frames.length ? frames[frames.length - 1].timestampSeconds : 0);
-
-  const template = [
-    { label: "Built structure", cat: "structure", note: "Rectilinear roofline / built envelope in aerial view." },
-    { label: "Access corridor", cat: "road", note: "Linear track connecting parcel interior to perimeter." },
-    { label: "Canopy vegetation", cat: "vegetation", note: "High green-channel canopy cluster." },
-    { label: "Surface water", cat: "hydrology", note: "Low-reflectance moisture / standing water signature." },
-  ];
-
-  const obsList: Observation[] = [];
-  const samples = isVideo && frames.length > 0 ? frames : [null];
-
-  samples.forEach((frame, i) => {
-    const ts = frame ? frame.timestampSeconds : isVideo ? Number(((i / Math.max(1, samples.length - 1)) * duration).toFixed(2)) : null;
-    const item = template[i % template.length];
-    const ymin = 120 + ((i * 90) % 420);
-    const xmin = 90 + ((i * 110) % 480);
-    obsList.push({
-      id: `obs-cv-${Date.now()}-${i + 1}`,
-      label: item.label,
-      category: item.cat,
-      confidence: Number((0.7 + ((i * 7) % 18) / 100).toFixed(2)),
-      reviewStatus: "unreviewed",
-      evidenceNote: `${item.note} Server fallback covering ${isVideo ? `t=${ts}s` : "still frame"}.`,
-      timestampSeconds: ts,
-      sourceMedia: input.sourceName,
-      boundingBox: [ymin, xmin, Math.min(940, ymin + 210), Math.min(940, xmin + 240)],
-    });
-  });
-
-  const needsAttention = obsList.some((o) => o.category === "encroachment" || o.category === "boundary");
-
   return {
     title: input.title,
     sourceType: input.sourceType,
     sourceName: input.sourceName,
-    status: needsAttention ? "needs_attention" : "needs_review",
-    observationCount: obsList.length,
+    status: "needs_review",
+    observationCount: 0,
     hasGeospatialMetadata: input.hasGeospatialMetadata,
     captureDate: input.captureDate || new Date().toISOString().slice(0, 10),
-    modelLabel: "Geo-VLM Sentinel • Computer Vision Engine",
-    observations: obsList,
+    modelLabel: "Not analyzed -- no GEMINI_API_KEY/GOOGLE_API_KEY configured on the server",
+    observations: [],
     mediaData: input.mediaData,
   };
 }

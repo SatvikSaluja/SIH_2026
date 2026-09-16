@@ -11,9 +11,9 @@ export interface Parcel {
   ulpin: string;
   regionId: string;
   regionName: string;
-  areaSqM: number;
-  ownership: string;
-  confidence: number;
+  areaSqM: number | null;
+  ownership: string | null;
+  confidence: number | null;
   status: string;
   geometry: number[][];
   updatedAt: string;

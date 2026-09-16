@@ -13,7 +13,7 @@ export interface DashboardSummary {
   parcelsExtracted: number;
   topologyErrors: number;
   encroachments: number;
-  accuracyScore: number;
+  accuracyScore: number | null;
   activeRun: ProcessingRun | null;
   recentActivity: Activity[];
 }

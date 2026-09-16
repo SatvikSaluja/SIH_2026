@@ -21,4 +21,5 @@ export interface Analysis {
   /** @nullable */
   captureDate: string | null;
   modelLabel: string;
+  mediaData?: string;
 }

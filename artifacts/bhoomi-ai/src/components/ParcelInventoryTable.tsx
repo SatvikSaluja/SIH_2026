@@ -27,29 +27,33 @@ export function ParcelInventoryTable({ geoData, searchQuery }: ParcelInventoryTa
     }
   };
 
+  // owner_name/ownership_status are genuinely null when geocadastra has no
+  // real value for them -- matched as empty strings here, not skipped
+  // with a crash the way `.toLowerCase()` on null used to.
   const filteredFeatures = geoData.features.filter((f) => {
     if (!searchQuery) return true;
     const q = searchQuery.toLowerCase();
     const props = f.properties;
     return (
       props.ulpin.toLowerCase().includes(q) ||
-      props.owner_name.toLowerCase().includes(q) ||
-      props.ownership_status.toLowerCase().includes(q)
+      (props.owner_name ?? '').toLowerCase().includes(q) ||
+      (props.ownership_status ?? '').toLowerCase().includes(q)
     );
   });
 
   const sortedFeatures = [...filteredFeatures].sort((a, b) => {
-    const aVal = a.properties[sortKey];
-    const bVal = b.properties[sortKey];
+    const aVal = a.properties[sortKey] ?? '';
+    const bVal = b.properties[sortKey] ?? '';
 
     if (aVal < bVal) return sortAsc ? -1 : 1;
     if (aVal > bVal) return sortAsc ? 1 : -1;
     return 0;
   });
 
-  const getStatusColor = (status: string) => {
+  const getStatusColor = (status: string | null) => {
     if (status === 'Disputed') return 'status-disputed';
     if (status === 'Government') return 'status-gov';
+    if (status === null) return 'status-unknown';
     return 'status-private';
   };
 
@@ -81,29 +85,33 @@ export function ParcelInventoryTable({ geoData, searchQuery }: ParcelInventoryTa
               <td style={{ fontFamily: 'var(--app-font-mono)', fontSize: '12px', color: 'var(--navy)' }}>
                 {f.properties.ulpin}
               </td>
-              <td>{f.properties.owner_name}</td>
+              <td>{f.properties.owner_name ?? <span style={{ color: '#94a3b8' }}>Not tracked</span>}</td>
               <td style={{ fontFamily: 'var(--app-font-mono)', fontSize: '12px' }}>
                 {f.properties.area_sqm.toLocaleString()}
               </td>
               <td>
                 <span className={`status-pill ${getStatusColor(f.properties.ownership_status)}`}>
-                  {f.properties.ownership_status}
+                  {f.properties.ownership_status ?? 'Not tracked'}
                 </span>
               </td>
               <td>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                  <div style={{ width: '40px', height: '4px', background: '#e2e8f0', borderRadius: '2px' }}>
-                    <div
-                      style={{
-                        width: `${f.properties.confidence_score}%`,
-                        height: '100%',
-                        background: '#059669',
-                        borderRadius: '2px',
-                      }}
-                    />
+                {f.properties.confidence_score == null ? (
+                  <span style={{ fontSize: '11px', color: '#94a3b8' }}>Not tracked</span>
+                ) : (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <div style={{ width: '40px', height: '4px', background: '#e2e8f0', borderRadius: '2px' }}>
+                      <div
+                        style={{
+                          width: `${f.properties.confidence_score}%`,
+                          height: '100%',
+                          background: '#059669',
+                          borderRadius: '2px',
+                        }}
+                      />
+                    </div>
+                    <span style={{ fontSize: '11px', color: '#64748b' }}>{f.properties.confidence_score}%</span>
                   </div>
-                  <span style={{ fontSize: '11px', color: '#64748b' }}>{f.properties.confidence_score}%</span>
-                </div>
+                )}
               </td>
             </tr>
           ))}

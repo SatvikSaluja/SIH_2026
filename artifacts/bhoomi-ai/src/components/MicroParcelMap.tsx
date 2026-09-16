@@ -25,7 +25,8 @@ export function MicroParcelMap({ bounds, geoData }: MicroParcelMapProps) {
     const props = feature?.properties as ParcelProperties | undefined;
     if (!props) return { color: '#3388ff', weight: 1 };
 
-    let fillColor = '#0ea5e9'; // Private (blue)
+    let fillColor = '#94a3b8'; // Not tracked (grey) -- geocadastra has no ownership concept, honestly distinct from "Private"
+    if (props.ownership_status === 'Private') fillColor = '#0ea5e9'; // Blue
     if (props.ownership_status === 'Government') fillColor = '#f59e0b'; // Amber
     if (props.ownership_status === 'Disputed') fillColor = '#ef4444'; // Red
 
@@ -46,10 +47,10 @@ export function MicroParcelMap({ bounds, geoData }: MicroParcelMapProps) {
       <div style="font-family: system-ui, sans-serif; padding: 4px; min-width: 180px;">
         <h4 style="margin: 0 0 6px 0; color: #0f172a; font-size: 14px;">${props.ulpin}</h4>
         <div style="font-size: 11px; color: #475569; line-height: 1.5;">
-          <div><strong>Owner:</strong> ${props.owner_name}</div>
+          <div><strong>Owner:</strong> ${props.owner_name ?? 'Not tracked'}</div>
           <div><strong>Area:</strong> ${props.area_sqm.toLocaleString()} sq.m</div>
-          <div><strong>Status:</strong> <span style="color: ${props.ownership_status === 'Disputed' ? '#ef4444' : '#0ea5e9'}">${props.ownership_status}</span></div>
-          <div><strong>Confidence:</strong> ${props.confidence_score}%</div>
+          <div><strong>Status:</strong> <span style="color: ${props.ownership_status === 'Disputed' ? '#ef4444' : '#0ea5e9'}">${props.ownership_status ?? 'Not tracked'}</span></div>
+          <div><strong>Confidence:</strong> ${props.confidence_score != null ? props.confidence_score + '%' : 'Not tracked'}</div>
         </div>
       </div>
     `;

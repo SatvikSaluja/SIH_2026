@@ -17,4 +17,5 @@ export interface Observation {
   /** @nullable */
   timestampSeconds: number | null;
   sourceMedia: string;
+  boundingBox?: [number, number, number, number];
 }
