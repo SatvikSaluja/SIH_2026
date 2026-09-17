@@ -10,13 +10,13 @@ services:
     envVars:
       - key: GEOCADASTRA_DB_URL
         fromDatabase:
-          name: geocadastra-db
+          name: geocadastra-db-v2
           property: connectionString
       - key: GEOCADASTRA_DB_SCHEMA
         value: public
       - key: GEOCADASTRA_CELERY_BROKER_URL
         fromDatabase:
-          name: geocadastra-redis
+          name: geocadastra-redis-v2
           property: connectionString
       - key: GEOCADASTRA_CORS_ORIGINS
         # Temporary: fast-demo default. Tighten to the real Netlify URL
@@ -36,21 +36,21 @@ services:
     envVars:
       - key: GEOCADASTRA_DB_URL
         fromDatabase:
-          name: geocadastra-db
+          name: geocadastra-db-v2
           property: connectionString
       - key: GEOCADASTRA_DB_SCHEMA
         value: public
       - key: GEOCADASTRA_CELERY_BROKER_URL
         fromDatabase:
-          name: geocadastra-redis
+          name: geocadastra-redis-v2
           property: connectionString
 
 databases:
-  - name: geocadastra-db
+  - name: geocadastra-db-v2
     databaseName: geocadastra
     plan: free
     postgresMajorVersion: "16"
 
-  - name: geocadastra-redis
+  - name: geocadastra-redis-v2
     plan: free
     maxmemoryPolicy: allkeys-lru
