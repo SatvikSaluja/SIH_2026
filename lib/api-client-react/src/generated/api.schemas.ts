@@ -41,23 +41,45 @@ export interface Activity {
 export interface DashboardSummary {
   areaProcessedSqKm: number;
   parcelsExtracted: number;
-  topologyErrors: number;
-  encroachments: number;
-  accuracyScore: number;
+  topologyErrors: number | null;
+  encroachments: number | null;
+  accuracyScore: number | null;
   activeRun: ProcessingRun | null;
   recentActivity: Activity[];
 }
 
+export type ParcelCoordinateSystem = typeof ParcelCoordinateSystem[keyof typeof ParcelCoordinateSystem];
+
+
+export const ParcelCoordinateSystem = {
+  'EPSG:4326': 'EPSG:4326',
+  LOCAL_METRES: 'LOCAL_METRES',
+} as const;
+
+export type ParcelGeometryType = typeof ParcelGeometryType[keyof typeof ParcelGeometryType];
+
+
+export const ParcelGeometryType = {
+  Polygon: 'Polygon',
+} as const;
+
+export type ParcelGeometry = {
+  type: ParcelGeometryType;
+  coordinates: number[][][];
+};
+
 export interface Parcel {
   id: string;
+  /** geocadastra's own recorded_parcel_id -- not a real Indian ULPIN */
   ulpin: string;
   regionId: string;
   regionName: string;
   areaSqM: number;
-  ownership: string;
-  confidence: number;
+  ownership?: string | null;
+  confidence?: number | null;
   status: string;
-  geometry: number[][];
+  coordinateSystem: ParcelCoordinateSystem;
+  geometry: ParcelGeometry;
   updatedAt: string;
 }
 
@@ -136,6 +158,7 @@ export interface Analysis {
   /** @nullable */
   captureDate: string | null;
   modelLabel: string;
+  mediaData?: string;
 }
 
 export interface SentinelOverview {
@@ -182,6 +205,7 @@ export interface ObservationInput {
   /** @nullable */
   timestampSeconds: number | null;
   sourceMedia: string;
+  boundingBox?: number[];
 }
 
 export interface AnalysisInput {
@@ -243,6 +267,7 @@ export interface Observation {
   /** @nullable */
   timestampSeconds: number | null;
   sourceMedia: string;
+  boundingBox?: number[];
 }
 
 export type AnalysisDetail = Analysis & {

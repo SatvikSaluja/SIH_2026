@@ -375,7 +375,7 @@ def vision(body:VisionRequest):
 @router.get('/training')
 def training():
     output=[]
-    for folder in sorted((ROOT/'runs').iterdir()):
+    for folder in sorted((ROOT/'runs').glob('*')):
         if not folder.is_dir():continue
         history=read_json(folder/'history.json',[]);result=read_json(folder/'result.json')
         if not history and not result:continue
@@ -414,7 +414,7 @@ def start_training(body:TrainRequest):
 
 
 def run_training(job,manifest):
-    out=ROOT/'runs'/('workspace_'+job['id']);out.mkdir()
+    out=ROOT/'runs'/('workspace_'+job['id']);out.mkdir(parents=True, exist_ok=True)
     job.update(status='running',run=out.name,started=time.time());write_record('jobs',job['id'],job)
     try:
         cmd=[sys.executable,str(ROOT/'scripts/colab/train_real.py'),'--data',str(manifest.parent),'--out',str(out),

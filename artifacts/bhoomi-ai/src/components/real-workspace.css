@@ -1,0 +1,13 @@
+.real-workspace section,.real-workspace article { padding:20px; margin:16px 0; border:1px solid var(--border); border-radius:12px; background:var(--surface); }
+.real-workspace .real-cards {display:flex; flex-wrap:wrap; gap:16px; padding:0; border:0; background:none;}
+.real-cards article {flex:1; min-width:160px;}
+.real-workspace label {display:inline-flex;flex-direction:column;gap:6px;margin:8px 12px 8px 0;}
+.real-workspace input,.real-workspace select,.real-workspace button {padding:9px;border:1px solid var(--border);border-radius:6px;color:var(--text-strong);background:var(--surface);max-width:100%;}
+.real-workspace button {margin:6px;cursor:pointer;}
+.real-workspace button:disabled {opacity:.5;cursor:not-allowed;}
+.real-workspace table {width:100%;text-align:left;border-collapse:collapse;}
+.real-workspace td,.real-workspace th {padding:10px;border-bottom:1px solid var(--border);}
+.real-workspace pre {overflow:auto;max-height:400px;white-space:pre-wrap;overflow-wrap:anywhere;}
+.real-workspace [role=alert] {color:#ef6b6b;white-space:pre-wrap;}
+.real-workspace p {overflow-wrap:anywhere;}
+.real-image {display:block;max-width:100%;max-height:450px;object-fit:contain;margin:16px 0;}

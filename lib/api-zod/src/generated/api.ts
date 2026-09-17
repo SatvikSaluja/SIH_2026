@@ -23,8 +23,8 @@ export const HealthCheckResponse = zod.object({
 export const GetDashboardResponse = zod.object({
   "areaProcessedSqKm": zod.number(),
   "parcelsExtracted": zod.number().int(),
-  "topologyErrors": zod.number().int(),
-  "encroachments": zod.number().int(),
+  "topologyErrors": zod.number().int().nullable(),
+  "encroachments": zod.number().int().nullable(),
   "accuracyScore": zod.number().nullable(),
   "activeRun": zod.union([zod.object({
   "id": zod.string(),
@@ -71,14 +71,18 @@ export const ListParcelsQueryParams = zod.object({
 
 export const ListParcelsResponseItem = zod.object({
   "id": zod.string(),
-  "ulpin": zod.string(),
+  "ulpin": zod.string().describe('geocadastra\'s own recorded_parcel_id -- not a real Indian ULPIN'),
   "regionId": zod.string(),
   "regionName": zod.string(),
   "areaSqM": zod.number(),
-  "ownership": zod.string().nullable(),
-  "confidence": zod.number().nullable(),
+  "ownership": zod.string().nullish(),
+  "confidence": zod.number().nullish(),
   "status": zod.string(),
-  "geometry": zod.array(zod.array(zod.number())),
+  "coordinateSystem": zod.enum(['EPSG:4326', 'LOCAL_METRES']),
+  "geometry": zod.object({
+  "type": zod.enum(['Polygon']),
+  "coordinates": zod.array(zod.array(zod.array(zod.number())))
+}),
   "updatedAt": zod.string()
 })
 export const ListParcelsResponse = zod.array(ListParcelsResponseItem)
@@ -93,14 +97,18 @@ export const GetParcelParams = zod.object({
 
 export const GetParcelResponse = zod.object({
   "id": zod.string(),
-  "ulpin": zod.string(),
+  "ulpin": zod.string().describe('geocadastra\'s own recorded_parcel_id -- not a real Indian ULPIN'),
   "regionId": zod.string(),
   "regionName": zod.string(),
   "areaSqM": zod.number(),
-  "ownership": zod.string().nullable(),
-  "confidence": zod.number().nullable(),
+  "ownership": zod.string().nullish(),
+  "confidence": zod.number().nullish(),
   "status": zod.string(),
-  "geometry": zod.array(zod.array(zod.number())),
+  "coordinateSystem": zod.enum(['EPSG:4326', 'LOCAL_METRES']),
+  "geometry": zod.object({
+  "type": zod.enum(['Polygon']),
+  "coordinates": zod.array(zod.array(zod.array(zod.number())))
+}),
   "updatedAt": zod.string()
 })
 
@@ -119,14 +127,18 @@ export const UpdateParcelBody = zod.object({
 
 export const UpdateParcelResponse = zod.object({
   "id": zod.string(),
-  "ulpin": zod.string(),
+  "ulpin": zod.string().describe('geocadastra\'s own recorded_parcel_id -- not a real Indian ULPIN'),
   "regionId": zod.string(),
   "regionName": zod.string(),
   "areaSqM": zod.number(),
-  "ownership": zod.string().nullable(),
-  "confidence": zod.number().nullable(),
+  "ownership": zod.string().nullish(),
+  "confidence": zod.number().nullish(),
   "status": zod.string(),
-  "geometry": zod.array(zod.array(zod.number())),
+  "coordinateSystem": zod.enum(['EPSG:4326', 'LOCAL_METRES']),
+  "geometry": zod.object({
+  "type": zod.enum(['Polygon']),
+  "coordinates": zod.array(zod.array(zod.array(zod.number())))
+}),
   "updatedAt": zod.string()
 })
 
@@ -249,7 +261,8 @@ export const GetSentinelOverviewResponse = zod.object({
   "verifiedObservationCount": zod.number().int(),
   "hasGeospatialMetadata": zod.boolean(),
   "captureDate": zod.string().nullable(),
-  "modelLabel": zod.string()
+  "modelLabel": zod.string(),
+  "mediaData": zod.string().optional()
 }),zod.null()])
 })
 
@@ -268,7 +281,8 @@ export const ListAnalysesResponseItem = zod.object({
   "verifiedObservationCount": zod.number().int(),
   "hasGeospatialMetadata": zod.boolean(),
   "captureDate": zod.string().nullable(),
-  "modelLabel": zod.string()
+  "modelLabel": zod.string(),
+  "mediaData": zod.string().optional()
 })
 export const ListAnalysesResponse = zod.array(ListAnalysesResponseItem)
 
@@ -293,7 +307,7 @@ export const CreateAnalysisBody = zod.object({
   "evidenceNote": zod.string(),
   "timestampSeconds": zod.number().nullable(),
   "sourceMedia": zod.string(),
-  "boundingBox": zod.tuple([zod.number(), zod.number(), zod.number(), zod.number()]).optional()
+  "boundingBox": zod.array(zod.number()).optional()
 })).optional()
 })
 
@@ -308,7 +322,8 @@ export const CreateAnalysisResponse = zod.object({
   "verifiedObservationCount": zod.number().int(),
   "hasGeospatialMetadata": zod.boolean(),
   "captureDate": zod.string().nullable(),
-  "modelLabel": zod.string()
+  "modelLabel": zod.string(),
+  "mediaData": zod.string().optional()
 })
 
 
@@ -341,7 +356,8 @@ export const AnalyzeMediaResponse = zod.object({
   "verifiedObservationCount": zod.number().int(),
   "hasGeospatialMetadata": zod.boolean(),
   "captureDate": zod.string().nullable(),
-  "modelLabel": zod.string()
+  "modelLabel": zod.string(),
+  "mediaData": zod.string().optional()
 }).and(zod.object({
   "observations": zod.array(zod.object({
   "id": zod.string(),
@@ -352,7 +368,7 @@ export const AnalyzeMediaResponse = zod.object({
   "evidenceNote": zod.string(),
   "timestampSeconds": zod.number().nullable(),
   "sourceMedia": zod.string(),
-  "boundingBox": zod.tuple([zod.number(), zod.number(), zod.number(), zod.number()]).optional()
+  "boundingBox": zod.array(zod.number()).optional()
 }))
 }))
 
@@ -375,7 +391,8 @@ export const GetAnalysisResponse = zod.object({
   "verifiedObservationCount": zod.number().int(),
   "hasGeospatialMetadata": zod.boolean(),
   "captureDate": zod.string().nullable(),
-  "modelLabel": zod.string()
+  "modelLabel": zod.string(),
+  "mediaData": zod.string().optional()
 }).and(zod.object({
   "observations": zod.array(zod.object({
   "id": zod.string(),
@@ -386,7 +403,7 @@ export const GetAnalysisResponse = zod.object({
   "evidenceNote": zod.string(),
   "timestampSeconds": zod.number().nullable(),
   "sourceMedia": zod.string(),
-  "boundingBox": zod.tuple([zod.number(), zod.number(), zod.number(), zod.number()]).optional()
+  "boundingBox": zod.array(zod.number()).optional()
 }))
 }))
 
@@ -413,7 +430,8 @@ export const VerifyAnalysisResponse = zod.object({
   "verifiedObservationCount": zod.number().int(),
   "hasGeospatialMetadata": zod.boolean(),
   "captureDate": zod.string().nullable(),
-  "modelLabel": zod.string()
+  "modelLabel": zod.string(),
+  "mediaData": zod.string().optional()
 })
 
 
@@ -439,7 +457,8 @@ export const GetAnalysisReportResponse = zod.object({
   "verifiedObservationCount": zod.number().int(),
   "hasGeospatialMetadata": zod.boolean(),
   "captureDate": zod.string().nullable(),
-  "modelLabel": zod.string()
+  "modelLabel": zod.string(),
+  "mediaData": zod.string().optional()
 }).and(zod.object({
   "observations": zod.array(zod.object({
   "id": zod.string(),
@@ -450,7 +469,7 @@ export const GetAnalysisReportResponse = zod.object({
   "evidenceNote": zod.string(),
   "timestampSeconds": zod.number().nullable(),
   "sourceMedia": zod.string(),
-  "boundingBox": zod.tuple([zod.number(), zod.number(), zod.number(), zod.number()]).optional()
+  "boundingBox": zod.array(zod.number()).optional()
 }))
 }))
 })

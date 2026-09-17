@@ -11,8 +11,8 @@ import type { ProcessingRun } from './processingRun';
 export interface DashboardSummary {
   areaProcessedSqKm: number;
   parcelsExtracted: number;
-  topologyErrors: number;
-  encroachments: number;
+  topologyErrors: number | null;
+  encroachments: number | null;
   accuracyScore: number | null;
   activeRun: ProcessingRun | null;
   recentActivity: Activity[];

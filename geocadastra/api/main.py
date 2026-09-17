@@ -22,7 +22,7 @@ from geocadastra.store.constraints import parcel_area_report
 
 import os
 
-from fastapi import Depends, FastAPI, HTTPException, Response
+from fastapi import Depends, FastAPI, HTTPException, Response, Query
 from fastapi.middleware.cors import CORSMiddleware
 from geoalchemy2.shape import from_shape, to_shape
 from pydantic import BaseModel, Field
@@ -31,6 +31,7 @@ from shapely.geometry import Point, box
 from sqlalchemy import create_engine, func, select, text
 from sqlalchemy.orm import Session, sessionmaker
 
+from geocadastra.api.geometry import map_feature, validate_faces
 from geocadastra.core.crs import Geom
 from geocadastra.core.evaluate import boundary_position_residuals, summarize_errors, parcel_count_error, topology_validity_rate
 from geocadastra.jobs.orchestrator import ingest_synthetic_ward, run_ward, ward_status
@@ -271,10 +272,12 @@ def list_wards(session: Session = Depends(get_session)):
             .where(IngestedBlock.ward_job_id == job.id)
         ).scalar_one()
         params = job.params or {}
-        area_sqkm = (params.get("width", 0) * params.get("height", 0)) / 1e6
+        area_sqkm = float(session.execute(select(func.coalesce(func.sum(func.ST_Area(IngestedBlock.geom)), 0)).where(IngestedBlock.ward_job_id == job.id)).scalar_one()) / 1e6
         result.append({
             "ward_job_id": job.id, "source": job.source, "status": _state,
             "n_blocks": len(blocks), "n_parcels": int(n_parcels),
+            "completed_blocks": sum(b["status"] == "done" for b in blocks),
+            "crs": job.crs, "synthetic": job.source.startswith("synthetic:"),
             "area_sqkm": area_sqkm, "created_at": job.created_at.isoformat(),
         })
     return {"wards": result}
@@ -328,6 +331,39 @@ def conflicts(ward_job_id: int, session: Session = Depends(get_session)):
             for c in rows
         ]
     }
+
+
+def _ward_faces(session, ward_job_id):
+    return select(Face).join(IngestedBlock, IngestedBlock.block_id == Face.block_id).where(IngestedBlock.ward_job_id == ward_job_id)
+
+
+@app.get("/wards/{ward_job_id}/geometry")
+def ward_geometry(ward_job_id: int, offset: int = Query(0, ge=0), limit: int = Query(500, ge=1, le=2000), session: Session = Depends(get_session)):
+    job = _get_ward_job_or_404(session, ward_job_id)
+    synthetic = job.source.startswith("synthetic:")
+    rows = session.execute(_ward_faces(session, ward_job_id).order_by(Face.id).offset(offset).limit(limit + 1)).scalars().all()
+    return {"type": "FeatureCollection", "coordinate_system": "LOCAL_METRES" if synthetic else "EPSG:4326",
+            "source_crs": job.crs, "synthetic": synthetic,
+            "next_offset": offset + limit if len(rows) > limit else None,
+            "features": [map_feature(f, to_shape(f.geom), crs=job.crs, synthetic=synthetic) for f in rows[:limit]]}
+
+
+@app.get("/wards/{ward_job_id}/topology")
+def ward_topology(ward_job_id: int, session: Session = Depends(get_session)):
+    job = _get_ward_job_or_404(session, ward_job_id)
+    state, blocks = ward_status(session, ward_job_id)
+    rows = session.execute(_ward_faces(session, ward_job_id).order_by(Face.id)).scalars().all()
+    issues = validate_faces([(f, to_shape(f.geom)) for f in rows])
+    nodes = []
+    for block in blocks:
+        if block["status"] == "done":
+            graph = load_block_graph(session, block["block_id"])
+            nodes.extend({"block_id": block["block_id"], "node_id": n.id, "x": n.x, "y": n.y} for n in graph.nodes.values())
+    return {"ward_job_id": job.id, "status": "not_scanned" if state != "done" or not rows else "attention" if issues else "valid_for_checks",
+            "checked_faces": len(rows), "checks": ["polygon_validity", "positive_area_overlap"],
+            "limitations": ["Gaps, sliver classification, survey accuracy and source conflicts are not certified by these checks."],
+            "issues": issues, "nodes": nodes, "source_crs": job.crs,
+            "synthetic": job.source.startswith("synthetic:")}
 
 
 # ------------------------------------------------------------- human edit --

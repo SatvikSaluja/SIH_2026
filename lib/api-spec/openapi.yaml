@@ -361,9 +361,9 @@ components:
       properties:
         areaProcessedSqKm: { type: number }
         parcelsExtracted: { type: integer }
-        topologyErrors: { type: integer }
-        encroachments: { type: integer }
-        accuracyScore: { type: number }
+        topologyErrors: { type: integer, nullable: true }
+        encroachments: { type: integer, nullable: true }
+        accuracyScore: { type: number, nullable: true }
         activeRun:
           oneOf:
             - $ref: "#/components/schemas/ProcessingRun"
@@ -387,7 +387,7 @@ components:
       # status or per-parcel confidence-score concept. Returning a fabricated
       # plausible value here was exactly the "no hardcoding" problem this merge
       # was meant to fix -- null is the honest answer until a real source exists.
-      required: [id, ulpin, regionId, regionName, areaSqM, status, geometry, updatedAt]
+      required: [id, ulpin, regionId, regionName, areaSqM, status, geometry, coordinateSystem, updatedAt]
       properties:
         id: { type: string }
         ulpin: { type: string, description: "geocadastra's own recorded_parcel_id -- not a real Indian ULPIN" }
@@ -397,11 +397,19 @@ components:
         ownership: { type: string, nullable: true }
         confidence: { type: number, nullable: true }
         status: { type: string }
+        coordinateSystem: { type: string, enum: [EPSG:4326, LOCAL_METRES] }
         geometry:
-          type: array
-          items:
-            type: array
-            items: { type: number }
+          type: object
+          required: [type, coordinates]
+          properties:
+            type: { type: string, enum: [Polygon] }
+            coordinates:
+              type: array
+              items:
+                type: array
+                items:
+                  type: array
+                  items: { type: number }
         updatedAt: { type: string }
     ParcelUpdate:
       type: object

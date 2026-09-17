@@ -54,6 +54,17 @@ export default defineConfig({
     fs: {
       strict: true,
     },
+    // Local dev only: the frontend calls relative /api/* paths (setBaseUrl()
+    // is never called, by design -- production serves both from one origin).
+    // Vite's own dev server has nothing at /api, so proxy it to the real
+    // Express server instead. API_PROXY_TARGET overrides the default for a
+    // non-default port.
+    proxy: {
+      '/api': {
+        target: process.env.API_PROXY_TARGET || 'http://127.0.0.1:5000',
+        changeOrigin: true,
+      },
+    },
   },
   preview: {
     port,

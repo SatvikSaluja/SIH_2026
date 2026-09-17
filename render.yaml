@@ -1,0 +1,56 @@
+services:
+  - type: web
+    name: geocadastra-api
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    plan: free
+    region: oregon
+    healthCheckPath: /wards
+    envVars:
+      - key: GEOCADASTRA_DB_URL
+        fromDatabase:
+          name: geocadastra-db
+          property: connectionString
+      - key: GEOCADASTRA_DB_SCHEMA
+        value: public
+      - key: GEOCADASTRA_CELERY_BROKER_URL
+        fromDatabase:
+          name: geocadastra-redis
+          property: connectionString
+      - key: GEOCADASTRA_CORS_ORIGINS
+        # Temporary: fast-demo default. Tighten to the real Netlify URL
+        # once the frontend is deployed (no cookies/auth in this app, so
+        # a wildcard isn't a credential-leak risk here, just too broad
+        # for anything beyond a quick demo).
+        value: "*"
+
+  - type: worker
+    name: geocadastra-worker
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    dockerCommand: celery -A geocadastra.jobs.orchestrator worker --loglevel=info --concurrency=2
+    plan: free
+    region: oregon
+    envVars:
+      - key: GEOCADASTRA_DB_URL
+        fromDatabase:
+          name: geocadastra-db
+          property: connectionString
+      - key: GEOCADASTRA_DB_SCHEMA
+        value: public
+      - key: GEOCADASTRA_CELERY_BROKER_URL
+        fromDatabase:
+          name: geocadastra-redis
+          property: connectionString
+
+databases:
+  - name: geocadastra-db
+    databaseName: geocadastra
+    plan: free
+    postgresMajorVersion: "16"
+
+  - name: geocadastra-redis
+    plan: free
+    maxmemoryPolicy: allkeys-lru

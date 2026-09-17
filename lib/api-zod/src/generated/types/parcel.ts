@@ -5,16 +5,20 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
+import type { ParcelCoordinateSystem } from './parcelCoordinateSystem';
+import type { ParcelGeometry } from './parcelGeometry';
 
 export interface Parcel {
   id: string;
+  /** geocadastra's own recorded_parcel_id -- not a real Indian ULPIN */
   ulpin: string;
   regionId: string;
   regionName: string;
-  areaSqM: number | null;
-  ownership: string | null;
-  confidence: number | null;
+  areaSqM: number;
+  ownership?: string | null;
+  confidence?: number | null;
   status: string;
-  geometry: number[][];
+  coordinateSystem: ParcelCoordinateSystem;
+  geometry: ParcelGeometry;
   updatedAt: string;
 }
