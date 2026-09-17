@@ -28,9 +28,8 @@ services:
   - type: worker
     name: geocadastra-worker
     runtime: docker
-    dockerfilePath: ./Dockerfile
+    dockerfilePath: ./Dockerfile.worker
     dockerContext: .
-    dockerCommand: celery -A geocadastra.jobs.orchestrator worker --loglevel=info --concurrency=2
     plan: free
     region: oregon
     envVars:
