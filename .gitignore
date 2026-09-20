@@ -84,3 +84,9 @@ Thumbs.db
 .local/
 friend_project/
 rasters/
+
+# Netlify/Render deploy bundles. These are multi-GB (the one that prompted
+# this rule was 1.6GB) and were sitting untracked-but-not-ignored, i.e. one
+# `git add .` away from entering history permanently -- the same trap the
+# data/ rule above was written for.
+deploy-*.zip

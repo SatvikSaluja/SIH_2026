@@ -1,6 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { MapContainer, TileLayer, GeoJSON, useMap } from 'react-leaflet';
 import * as turf from '@turf/turf';
+// GeoJSON structural types come from 'geojson' (as in ParcelExplorerModal),
+// not from @turf/turf -- turf exports the constructor *functions*
+// (featureCollection, polygon), so `turf.FeatureCollection` is not a type.
+import type { BBox, FeatureCollection, MultiPolygon, Polygon } from 'geojson';
 import { 
   Network, Search, Hammer, CheckCircle2, AlertTriangle, 
   ChevronRight, Check, MapPinned, Eye, Layers, Globe, 
@@ -218,7 +222,7 @@ export function TopologyModule() {
   const [selectedView, setSelectedView] = useState(MAP_VIEWS[0]);
   const [isScanning, setIsScanning] = useState(false);
   const [isFixing, setIsFixing] = useState(false);
-  const [parcels, setParcels] = useState<turf.FeatureCollection<turf.Polygon | turf.MultiPolygon> | null>(null);
+  const [parcels, setParcels] = useState<FeatureCollection<Polygon | MultiPolygon> | null>(null);
   const [errors, setErrors] = useState<TopologyError[]>([]);
   const [selectedErrorId, setSelectedErrorId] = useState<string | null>(null);
   const [reportModal, setReportModal] = useState<{ before: number, fixed: number, time: number } | null>(null);
@@ -285,7 +289,9 @@ export function TopologyModule() {
       }
 
       if (baseFeatures.length === 0) {
-        const bbox = [
+        // Annotated as a 4-tuple: squareGrid takes a BBox, and a bare
+        // array literal widens to number[], which is not assignable to it.
+        const bbox: BBox = [
           selectedCity.center[1] - 0.015,
           selectedCity.center[0] - 0.015,
           selectedCity.center[1] + 0.015,
@@ -369,7 +375,7 @@ export function TopologyModule() {
         }
       });
 
-      let grid = turf.featureCollection(distributedFeatures) as turf.FeatureCollection<turf.Polygon | turf.MultiPolygon>;
+      let grid = turf.featureCollection(distributedFeatures) as FeatureCollection<Polygon | MultiPolygon>;
       const newErrors: TopologyError[] = [];
 
       // ANOMALY COUNT VARIES STRICTLY BY CITY SIZE TIER

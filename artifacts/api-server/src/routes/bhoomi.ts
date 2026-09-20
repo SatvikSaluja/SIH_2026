@@ -6,10 +6,10 @@ const base = process.env.GEOCADASTRA_API_BASE ?? 'http://127.0.0.1:8000';
 class ApiError extends Error {
   constructor(public status: number, message: string) { super(message); }
 }
-async function gc(path: string, init?: RequestInit) {
+async function gc<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${base}${path}`, { ...init, signal: AbortSignal.timeout(30000) });
   if (!response.ok) throw new ApiError(response.status, await response.text());
-  return response.json();
+  return response.json() as Promise<T>;
 }
 const jsonPost = (body?: unknown): RequestInit => ({ method: 'POST', headers: { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
 interface Ward {
@@ -19,7 +19,7 @@ interface Ward {
 const rid = (w: Ward) => `ward-${w.ward_job_id}`;
 const name = (w: Ward) => `Ward ${w.ward_job_id} (${w.source})`;
 const progress = (w: Ward) => w.n_blocks ? Math.floor(100 * w.completed_blocks / w.n_blocks) : 0;
-async function wards(): Promise<Ward[]> { return (await gc('/wards')).wards; }
+async function wards(): Promise<Ward[]> { return (await gc<{ wards: Ward[] }>('/wards')).wards; }
 async function ward(id: unknown) {
   if (typeof id !== 'string' || !/^ward-[1-9]\d*$/.test(id)) throw new ApiError(400, 'Select a ward ID from the region list');
   const result = (await wards()).find(w => rid(w) === id);
@@ -34,15 +34,20 @@ interface MapFeature {
   id: string; geometry: { type: 'Polygon'; coordinates: number[][][] };
   properties: { face_id: number; parcel_id: number | null; block_id: number; area_m2: number; updated_at: string };
 }
+interface GeometryPage { features: MapFeature[]; coordinate_system: string; next_offset: number | null }
 async function geometry(w: Ward) {
   const features: MapFeature[] = [];
   let offset: number | null = 0;
   let coordinateSystem = '';
   do {
-    const page = await gc(`/wards/${w.ward_job_id}/geometry?offset=${offset}&limit=2000`);
+    const page: GeometryPage = await gc<GeometryPage>(
+      `/wards/${w.ward_job_id}/geometry?offset=${offset}&limit=2000`);
     features.push(...page.features);
     coordinateSystem = page.coordinate_system;
-    const next = page.next_offset;
+    // Annotated, not inferred: `offset` is read inside `page`'s own initializer
+    // (the query string) and written from `page`'s result, which makes the
+    // inference circular (TS7022) unless one edge of the cycle is declared.
+    const next: number | null = page.next_offset;
     if (next !== null && (!Number.isInteger(next) || next <= offset)) throw new ApiError(502, 'Invalid parcel pagination');
     offset = next;
   } while (offset !== null);
@@ -122,8 +127,13 @@ router.post('/exports', async(req,res,next) => {
 router.use(async (req,res,next) => {
   const workspace = /^\/workspace\/(catalog|tiles(?:\/[^/]+\/[^/]+(?:\/image|\/evidence)?)?|jobs(?:\/[^/]+\/artifact)?|training|inference)$/;
   const wardPath = /^\/wards(?:\/[1-9]\d*\/(geometry|topology|edit|status|conflicts))?$/;
-  if (!workspace.test(req.path) && !wardPath.test(req.path)) { next(); return; }
-  const canPost = /^\/workspace\/(inference|training)$/.test(req.path) || /^\/wards\/[1-9]\d*\/edit$/.test(req.path);
+  // advisory.py's LLM layer. Read-only by contract on the backend side (it
+  // writes nothing back), so allowing POST here can't mutate ward state --
+  // ask/priority/conflict-advice are POSTs only because they carry a body.
+  const advisory = /^\/advisory\/(conflicts\/[1-9]\d*|wards\/[1-9]\d*\/(brief|ask|priority|conflicts\/triage))$/;
+  if (!workspace.test(req.path) && !wardPath.test(req.path) && !advisory.test(req.path)) { next(); return; }
+  const canPost = /^\/workspace\/(inference|training)$/.test(req.path) || /^\/wards\/[1-9]\d*\/edit$/.test(req.path)
+    || /^\/advisory\/(conflicts\/[1-9]\d*|wards\/[1-9]\d*\/(ask|priority))$/.test(req.path);
   if (req.method !== 'GET' && !(req.method === 'POST' && canPost)) { res.status(405).json({error:'Method not allowed'}); return; }
   try {
     const response = await fetch(`${base}${req.url}`, { ...(req.method === 'POST' ? jsonPost(req.body) : {}), signal:AbortSignal.timeout(30000) });

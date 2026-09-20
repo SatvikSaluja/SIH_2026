@@ -1,7 +1,9 @@
 """FastAPI surface (Stage 8): ingest and co-registration, inference job
 submission and polling, spatially indexed parcel query, conflict records,
 human edit via changeset, field verification attachment, export, and the
-analytics endpoints.
+analytics endpoints. Also mounts workspace.py's local research console
+and advisory.py's LLM advisory layer (conflict/priority summaries, a
+bounded read-only Q&A tool loop) -- see each module's own docstring.
 
 A DB session per request comes from `get_session`, itself built from
 `GEOCADASTRA_DB_URL`/`GEOCADASTRA_DB_SCHEMA` env vars (defaults matching
@@ -28,8 +30,8 @@ from geoalchemy2.shape import from_shape, to_shape
 from pydantic import BaseModel, Field
 from shapely.affinity import affine_transform
 from shapely.geometry import Point, box
-from sqlalchemy import create_engine, func, select, text
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy import func, select, text
+from sqlalchemy.orm import Session
 
 from geocadastra.api.geometry import map_feature, validate_faces
 from geocadastra.core.crs import Geom
@@ -56,6 +58,9 @@ app = FastAPI(title="GeoCadastra")
 from geocadastra.api.workspace import router as workspace_router
 app.include_router(workspace_router)
 
+from geocadastra.api.advisory import router as advisory_router
+app.include_router(advisory_router)
+
 # No auth exists yet (see api/main.py's own module docstring gaps), so this
 # is a dev-scoped allowlist, not "*": GEOCADASTRA_CORS_ORIGINS overrides it
 # for a real deployment, but the default must not silently accept every
@@ -67,48 +72,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-_DB_URL = os.environ.get("GEOCADASTRA_DB_URL", "postgresql+psycopg://geocadastra:geocadastra@localhost:5432/geocadastra")
-_DB_SCHEMA = os.environ.get("GEOCADASTRA_DB_SCHEMA", "public")
-_engine = None
-
-
-def _get_engine():
-    global _engine
-    if _engine is None:
-        _engine = create_engine(_DB_URL, connect_args={"options": f"-csearch_path={_DB_SCHEMA},public"})
-    return _engine
-
-
-def get_session():
-    session = sessionmaker(bind=_get_engine())()
-    try:
-        yield session
-    finally:
-        session.close()
-
-
-def get_db_config() -> tuple[str, str]:
-    """`(db_url, schema)` for `run_ward()`'s Celery dispatch -- a SEPARATE
-    dependency from `get_session()`, not the same module globals baked
-    directly into the `/run` handler, because a test overriding
-    `get_session` (the standard FastAPI testing pattern, pointing requests
-    at a test schema) must ALSO redirect where dispatched tasks look for
-    their own data, or a task opens a session against the real default
-    schema while the request's own session was pointed at the test one --
-    two different databases silently in play at once. Found exactly this
-    way: `/run` without this indirection passed `_DB_URL`/`_DB_SCHEMA`
-    straight through even under a test override, and every dispatched
-    task then failed with `UndefinedTable` looking for `block_jobs` in a
-    schema that was never created.
-    """
-    return _DB_URL, _DB_SCHEMA
-
-
-def _get_ward_job_or_404(session: Session, ward_job_id: int) -> WardJob:
-    job = session.get(WardJob, ward_job_id)
-    if job is None:
-        raise HTTPException(404, f"no ward {ward_job_id}")
-    return job
+# get_session/get_db_config/_get_ward_job_or_404 live in deps.py, not
+# here -- advisory.py (a second router module) needs them too, and
+# having it import them FROM main.py while main.py imports advisory.py
+# to mount its router is a true circular import, not just an ordering
+# problem (confirmed: it broke the moment something imported advisory.py
+# before main.py, e.g. a test file mocking advisory._call_anthropic
+# directly). Both main.py and advisory.py import from deps.py instead;
+# neither imports the other. Re-imported here by name so the existing
+# `from geocadastra.api.main import get_session` test pattern still works.
+from geocadastra.api.deps import _get_ward_job_or_404, get_db_config, get_session
 
 
 # ---------------------------------------------------------------- ingest --

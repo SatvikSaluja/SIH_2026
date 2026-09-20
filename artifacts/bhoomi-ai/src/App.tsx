@@ -6,6 +6,7 @@ import { IndiaBoundaryMap } from './components/IndiaBoundaryMap';
 import { ParcelExplorerModal } from './components/ParcelExplorerModal';
 import { TopologyModule as Topology } from './components/TopologyModule';
 import { Dashboard, Ingestion } from './components/RealWorkspace';
+import { Advisory } from './components/Advisory';
 import { ParcelMap } from './components/ParcelExplorerModal';
 import {
   Activity,
@@ -87,6 +88,7 @@ const nav = [
   { href: '/', label: 'Command center', icon: Radio },
   { href: '/ingestion', label: 'Inference studio', icon: UploadCloud },
   { href: '/topology', label: 'Topology', icon: Network },
+  { href: '/advisory', label: 'Ward advisory', icon: Sparkles },
   { href: '/sentinel', label: 'Geo-VLM Sentinel', icon: Brain },
   { href: '/changes', label: 'Change detection', icon: Layers3 },
   { href: '/field', label: 'Field verification', icon: MapPinned },
@@ -232,13 +234,13 @@ function Sidebar({ open, onClose }: { open: boolean; onClose: () => void }) {
       </div>
       <nav className="nav">
         <div className="nav-label">Operational layers</div>
-        {nav.slice(0, 6).map(({ href, label, icon: Icon }) => (
+        {nav.slice(0, 7).map(({ href, label, icon: Icon }) => (
           <Link key={href} href={href} onClick={onClose} className={`nav-item ${location === href ? 'nav-active' : ''}`} data-testid={`link-${label.toLowerCase().replace(/\s+/g, '-')}`}>
             <Icon size={17} strokeWidth={1.8} /><span>{label}</span>{href === '/' && <span className="nav-pulse" />}
           </Link>
         ))}
         <div className="nav-label nav-label-secondary">Governance</div>
-        {nav.slice(6).map(({ href, label, icon: Icon }) => (
+        {nav.slice(7).map(({ href, label, icon: Icon }) => (
           <Link key={href} href={href} onClick={onClose} className={`nav-item ${location === href ? 'nav-active' : ''}`} data-testid={`link-${label.toLowerCase().replace(/\s+/g, '-')}`}>
             <Icon size={17} strokeWidth={1.8} /><span>{label}</span>
           </Link>
@@ -348,7 +350,7 @@ function Usage({ label, value, suffix, percent }: { label: string; value: string
 
 function AppRouter() {
   const [location] = useLocation();
-  return <ErrorBoundary resetKey={location}><Shell><Switch><Route path="/" component={Dashboard} /><Route path="/ingestion" component={Ingestion} /><Route path="/topology" component={Topology} /><Route path="/sentinel" component={GeoVlmSentinelModule} /><Route path="/changes" component={Changes} /><Route path="/field" component={Field} /><Route path="/exports" component={Exports} /><Route path="/billing" component={Billing} /><Route component={NotFound} /></Switch></Shell></ErrorBoundary>;
+  return <ErrorBoundary resetKey={location}><Shell><Switch><Route path="/" component={Dashboard} /><Route path="/ingestion" component={Ingestion} /><Route path="/topology" component={Topology} /><Route path="/advisory" component={Advisory} /><Route path="/sentinel" component={GeoVlmSentinelModule} /><Route path="/changes" component={Changes} /><Route path="/field" component={Field} /><Route path="/exports" component={Exports} /><Route path="/billing" component={Billing} /><Route component={NotFound} /></Switch></Shell></ErrorBoundary>;
 }
 
 export default function App() {

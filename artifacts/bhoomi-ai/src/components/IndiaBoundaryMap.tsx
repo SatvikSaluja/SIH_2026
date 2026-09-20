@@ -313,7 +313,7 @@ export function IndiaBoundaryMap({
             >
               <Popup>
                 <div style={{ fontFamily: 'system-ui, sans-serif', padding: '6px', minWidth: '220px' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', justifyBetween: 'space-between', marginBottom: '6px', borderBottom: '1px solid #e2e8f0', paddingBottom: '4px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '6px', borderBottom: '1px solid #e2e8f0', paddingBottom: '4px' }}>
                     <strong style={{ color: '#ef4444', fontSize: '13px', display: 'flex', alignItems: 'center', gap: '4px' }}>
                       📍 Predicted Patch Location
                     </strong>
