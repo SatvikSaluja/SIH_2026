@@ -125,14 +125,23 @@ router.post('/exports', async(req,res,next) => {
 });
 // Fixed upstream host and an explicit route allowlist. Same-origin access works through the Express proxy in development and production.
 router.use(async (req,res,next) => {
-  const workspace = /^\/workspace\/(catalog|tiles(?:\/[^/]+\/[^/]+(?:\/image|\/evidence)?)?|jobs(?:\/[^/]+\/artifact)?|training|inference)$/;
-  const wardPath = /^\/wards(?:\/[1-9]\d*\/(geometry|topology|edit|status|conflicts))?$/;
+  // reviews/vision are reached only by the folded-in operator console; they
+  // were previously served to it by uvicorn directly over CORS.
+  const workspace = /^\/workspace\/(catalog|tiles(?:\/[^/]+\/[^/]+(?:\/image|\/evidence)?)?|jobs(?:\/[^/]+\/artifact)?|training|inference|reviews|vision)$/;
+  // The operator console (src/operator/) drives the rest of main.py's ward
+  // surface -- analytics, constraints, co-registration, parcel associations,
+  // field verification, the bbox parcel query and run. Those were previously
+  // only reachable from the standalone frontend/ app talking to uvicorn
+  // directly with CORS; folding that app in means they come through here.
+  const wardPath = /^\/wards(?:\/ingest|\/[1-9]\d*\/(geometry|topology|edit|status|conflicts|analytics|constraints|coregister|parcel-associations|field-verification|parcels|run))?$/;
   // advisory.py's LLM layer. Read-only by contract on the backend side (it
   // writes nothing back), so allowing POST here can't mutate ward state --
   // ask/priority/conflict-advice are POSTs only because they carry a body.
   const advisory = /^\/advisory\/(conflicts\/[1-9]\d*|wards\/[1-9]\d*\/(brief|ask|priority|conflicts\/triage))$/;
   if (!workspace.test(req.path) && !wardPath.test(req.path) && !advisory.test(req.path)) { next(); return; }
-  const canPost = /^\/workspace\/(inference|training)$/.test(req.path) || /^\/wards\/[1-9]\d*\/edit$/.test(req.path)
+  const canPost = /^\/workspace\/(inference|training|reviews|vision)$/.test(req.path)
+    || /^\/wards\/ingest$/.test(req.path)
+    || /^\/wards\/[1-9]\d*\/(edit|run|coregister|parcel-associations|field-verification)$/.test(req.path)
     || /^\/advisory\/(conflicts\/[1-9]\d*|wards\/[1-9]\d*\/(ask|priority))$/.test(req.path);
   if (req.method !== 'GET' && !(req.method === 'POST' && canPost)) { res.status(405).json({error:'Method not allowed'}); return; }
   try {

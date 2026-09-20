@@ -3,7 +3,13 @@
 // convention. If a shape below stops matching the backend, the backend moved,
 // not this file.
 
-const BASE = import.meta.env.VITE_API_BASE ?? "";
+// Was VITE_API_BASE pointing straight at uvicorn with CORS, back when this
+// console was its own Vite app. In the unified app everything reaches the
+// backend the same way -- relative /api/*, through the Express proxy -- so
+// there is one access pattern, not two. The panels below are otherwise
+// unchanged from that app; the proxy's allowlist is what decides which of
+// these endpoints are actually reachable from a browser.
+const BASE = "/api";
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {

@@ -1,7 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
-import "./App.css";
+// Stylesheet is the old standalone app's, mechanically scoped under
+// .workspace-console -- it styles bare `body`/`button`/`h1` and reuses ten
+// class names the shell already owns (.brand, .topbar, .nav-item, ...), so
+// unscoped it would restyle every other page in this app.
+import "./workspace-console.css";
 import OperatorConsole from "./OperatorConsole";
 import { request, asset, jobAsset } from "./workspace";
 import type {
@@ -379,6 +383,7 @@ export default function App() {
     setSelectedJob("");
   };
   return (
+    <div className="workspace-console">
     <div className="workspace-shell">
       <aside className="rail">
         <a
@@ -1301,6 +1306,7 @@ export default function App() {
           </footer>
         </div>
       </main>
+    </div>
     </div>
   );
 }

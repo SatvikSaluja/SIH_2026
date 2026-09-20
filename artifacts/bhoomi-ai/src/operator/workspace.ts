@@ -1,4 +1,6 @@
-export const API = import.meta.env.VITE_API_BASE ?? "";
+// Same repoint as operator/api.ts: relative /api/*, through the Express
+// proxy, instead of the old standalone app's direct-to-uvicorn CORS base.
+export const API = "/api";
 export async function request<T>(path: string, body?: unknown): Promise<T> {
   const response = await fetch(
     API + "/workspace" + path,

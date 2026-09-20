@@ -7,6 +7,12 @@ import { ParcelExplorerModal } from './components/ParcelExplorerModal';
 import { TopologyModule as Topology } from './components/TopologyModule';
 import { Dashboard, Ingestion } from './components/RealWorkspace';
 import { Advisory } from './components/Advisory';
+// The whole of the former standalone frontend/ app, folded in as one route:
+// Overview, Datasets, Inference, Evidence, Review queue, Vision assistant,
+// Training, and Ward operations (its own OperatorConsole). It is the only
+// UI for /workspace/reviews and /workspace/vision, which nothing else here
+// reaches, so deleting that app outright would have dropped real features.
+import WorkspaceConsole from './operator/WorkspaceConsole';
 import { ParcelMap } from './components/ParcelExplorerModal';
 import {
   Activity,
@@ -89,11 +95,11 @@ const nav = [
   { href: '/ingestion', label: 'Inference studio', icon: UploadCloud },
   { href: '/topology', label: 'Topology', icon: Network },
   { href: '/advisory', label: 'Ward advisory', icon: Sparkles },
+  { href: '/operator', label: 'Operator console', icon: FlaskConical },
   { href: '/sentinel', label: 'Geo-VLM Sentinel', icon: Brain },
   { href: '/changes', label: 'Change detection', icon: Layers3 },
   { href: '/field', label: 'Field verification', icon: MapPinned },
   { href: '/exports', label: 'Export center', icon: ArrowDownToLine },
-  { href: '/billing', label: 'Billing', icon: FileCheck2 },
 ];
 
 function formatNumber(value: number | null | undefined, digits = 0) {
@@ -234,13 +240,13 @@ function Sidebar({ open, onClose }: { open: boolean; onClose: () => void }) {
       </div>
       <nav className="nav">
         <div className="nav-label">Operational layers</div>
-        {nav.slice(0, 7).map(({ href, label, icon: Icon }) => (
+        {nav.slice(0, 8).map(({ href, label, icon: Icon }) => (
           <Link key={href} href={href} onClick={onClose} className={`nav-item ${location === href ? 'nav-active' : ''}`} data-testid={`link-${label.toLowerCase().replace(/\s+/g, '-')}`}>
             <Icon size={17} strokeWidth={1.8} /><span>{label}</span>{href === '/' && <span className="nav-pulse" />}
           </Link>
         ))}
         <div className="nav-label nav-label-secondary">Governance</div>
-        {nav.slice(7).map(({ href, label, icon: Icon }) => (
+        {nav.slice(8).map(({ href, label, icon: Icon }) => (
           <Link key={href} href={href} onClick={onClose} className={`nav-item ${location === href ? 'nav-active' : ''}`} data-testid={`link-${label.toLowerCase().replace(/\s+/g, '-')}`}>
             <Icon size={17} strokeWidth={1.8} /><span>{label}</span>
           </Link>
@@ -333,24 +339,9 @@ function Exports() {
   );
 }
 
-function Billing() {
-  return (
-    <>
-      <div className="page-heading"><div><div className="eyebrow">SYSTEM MONITORING / INFRASTRUCTURE</div><h1>Compute & Storage Costs</h1><p>Real-time resource utilization and API consumption for BhoomiDrishti AI.</p></div><div className="heading-actions"><Button kind="secondary"><Send size={15} /> Export Usage Report</Button></div></div>
-      <div className="billing-hero"><div><span className="plan-kicker">ACTIVE WORKSPACE · SMART INDIA HACKATHON 2026</span><h2>SIH Developer Tier</h2><p>Provisioned for high-performance GeoAI inference and large-scale spatial data processing.</p><div className="plan-tags"><span><ShieldCheck size={14} /> AWS p4d.24xlarge (GPU)</span><span><Satellite size={14} /> 500GB NVMe SSD</span><span><Map size={14} /> Carto Maps API</span></div></div><div className="price-block"><small>ESTIMATED HOURLY BURN</small><strong>₹312.50</strong><span>based on current usage</span></div></div>
-      <div className="billing-grid"><Surface><SectionHeading eyebrow="CURRENT UTILIZATION" title="Live Resource Metrics" /><div className="usage-list"><Usage label="Svamitva Dataset Storage (S3)" value="4.7" suffix=" / 10 GB" percent={47} /><Usage label="GPU Inference Time (U-Net)" value="3.2" suffix=" / 10 Hours" percent={32} /><Usage label="Carto Map Tile Requests" value="1.2k" suffix=" / 10k Limit" percent={12} /></div></Surface><Surface><SectionHeading eyebrow="INFRASTRUCTURE" title="Deployed Services" /><div className="account-list"><div><span className="account-icon"><UserRound size={15} /></span><span><strong>Cloud Provider</strong><small>AWS (ap-south-1 Mumbai Region)</small></span><ChevronRight size={16} /></div><div><span className="account-icon"><FileCheck2 size={15} /></span><span><strong>Model Server</strong><small>PyTorch / FastAPI Endpoint · Active</small></span><ChevronRight size={16} /></div><div><span className="account-icon"><Bell size={15} /></span><span><strong>Frontend Hosting</strong><small>Vite + React (Edge Network)</small></span><ChevronRight size={16} /></div></div></Surface></div>
-      <Surface className="invoice-surface"><SectionHeading eyebrow="LOGS" title="Recent Compute Sessions" action={<Button kind="ghost"><Download size={15} /> Download Logs</Button>} /><div className="invoice-row"><span className="invoice-date">13 SEP 2026</span><div><strong>Batch Inference: Rajasthan Jurisdiction</strong><small>Processed 690 patches · 32 mins GPU time</small></div><strong>₹166.00</strong><span className="status-pill status-good">completed</span><Download size={16} /></div><div className="invoice-row"><span className="invoice-date">13 SEP 2026</span><div><strong>Dataset Ingestion & Tiling</strong><small>Svamitva Dataset (4.7 GB) extraction and chunking</small></div><strong>₹45.00</strong><span className="status-pill status-good">completed</span><Download size={16} /></div></Surface>
-    </>
-  );
-}
-
-function Usage({ label, value, suffix, percent }: { label: string; value: string; suffix: string; percent: number }) {
-  return <div className="usage-item"><div><strong>{label}</strong><span><b>{value}</b>{suffix}</span></div><div className="usage-track"><i style={{ width: `${percent}%` }} /></div><small>{percent}% used</small></div>;
-}
-
 function AppRouter() {
   const [location] = useLocation();
-  return <ErrorBoundary resetKey={location}><Shell><Switch><Route path="/" component={Dashboard} /><Route path="/ingestion" component={Ingestion} /><Route path="/topology" component={Topology} /><Route path="/advisory" component={Advisory} /><Route path="/sentinel" component={GeoVlmSentinelModule} /><Route path="/changes" component={Changes} /><Route path="/field" component={Field} /><Route path="/exports" component={Exports} /><Route path="/billing" component={Billing} /><Route component={NotFound} /></Switch></Shell></ErrorBoundary>;
+  return <ErrorBoundary resetKey={location}><Shell><Switch><Route path="/" component={Dashboard} /><Route path="/ingestion" component={Ingestion} /><Route path="/topology" component={Topology} /><Route path="/advisory" component={Advisory} /><Route path="/operator" component={WorkspaceConsole} /><Route path="/sentinel" component={GeoVlmSentinelModule} /><Route path="/changes" component={Changes} /><Route path="/field" component={Field} /><Route path="/exports" component={Exports} /><Route component={NotFound} /></Switch></Shell></ErrorBoundary>;
 }
 
 export default function App() {

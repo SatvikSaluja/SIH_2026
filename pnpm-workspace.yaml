@@ -38,7 +38,11 @@ packages:
   - artifacts/*
   - lib/*
   - lib/integrations/*
-  - scripts
+  # `scripts/` is NOT a workspace package: it is this project's Python
+  # training/eval code (scripts/colab/train_real.py and friends). The merge
+  # fused a `@workspace/scripts` stub -- one console.log -- into the same
+  # directory, which made pnpm drop a node_modules/ in among the Python.
+  # The stub had no dependents and is gone.
 
 catalog:
   '@replit/vite-plugin-cartographer': ^0.5.21

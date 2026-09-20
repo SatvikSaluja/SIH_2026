@@ -1,4 +1,4 @@
-# GeoCadastra frontend
+# GeoCadastra operator console
 
 An operator console over the real API in `geocadastra/api/main.py` — every
 screen calls an endpoint that exists and is tested; nothing here is a mock
@@ -6,15 +6,22 @@ or a placeholder for a future backend.
 
 ## Run it
 
-```bash
-npm install
-cp .env.example .env.local   # point VITE_API_BASE at your running API
-npm run dev
-```
+This was its own Vite app at `frontend/` with its own `package.json`, dev
+server and `VITE_API_BASE` CORS connection. It is now a route inside the one
+app — `/operator` in `artifacts/bhoomi-ai` — so there is a single install,
+a single dev server and a single way to reach the backend. Start the app the
+normal way and open **Operator console** in the sidebar.
 
-The API needs CORS enabled for the dev origin (already wired in
-`geocadastra/api/main.py` via `GEOCADASTRA_CORS_ORIGINS`, defaulting to
-`http://localhost:5173`).
+Two things changed in the fold-in, and nothing else:
+
+- `api.ts` and `workspace.ts` set `BASE`/`API` to `/api`, so requests go
+  through the Express proxy in `artifacts/api-server` instead of straight to
+  uvicorn. The proxy's allowlist decides what is reachable; the ward and
+  workspace endpoints these panels use are on it.
+- `App.css` became `workspace-console.css`, mechanically scoped under
+  `.workspace-console`. It styles bare `body`/`button`/`h1` and reuses ten
+  class names the surrounding shell already owns, so unscoped it would have
+  restyled every other page.
 
 ## What's wired, and what isn't
 
