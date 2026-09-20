@@ -54,15 +54,30 @@ export default defineConfig({
     fs: {
       strict: true,
     },
-    // Local dev only: the frontend calls relative /api/* paths (setBaseUrl()
-    // is never called, by design -- production serves both from one origin).
-    // Vite's own dev server has nothing at /api, so proxy it to the real
-    // Express server instead. API_PROXY_TARGET overrides the default for a
-    // non-default port.
+    // The frontend calls relative /api/* paths (setBaseUrl() is never
+    // called, by design). These two rules mirror the production Netlify
+    // redirects exactly, so a route that works here works deployed --
+    // which was NOT true before: the translation routes used to live only
+    // in the Express server, which production never routed through, so
+    // /dashboard, /regions, /parcels, /changes, /processing/runs and
+    // /exports all 404'd once deployed while passing locally.
+    //
+    // Order matters: Vite matches these in declaration order, so the
+    // narrower /api/sentinel rule has to come first.
     proxy: {
-      '/api': {
-        target: process.env.API_PROXY_TARGET || 'http://127.0.0.1:5000',
+      // Geo-VLM Sentinel is the one surface still served by the Express
+      // app (its own store plus a Gemini client). Nothing in the Python
+      // backend answers /sentinel/*, so it cannot go direct yet.
+      '/api/sentinel': {
+        target: process.env.SENTINEL_PROXY_TARGET || 'http://127.0.0.1:5001',
         changeOrigin: true,
+      },
+      // Everything else is the Python backend, path-rewritten the same
+      // way the Netlify :splat redirect rewrites it.
+      '/api': {
+        target: process.env.API_PROXY_TARGET || 'http://127.0.0.1:8000',
+        changeOrigin: true,
+        rewrite: (requestPath) => requestPath.replace(/^\/api/, ''),
       },
     },
   },
