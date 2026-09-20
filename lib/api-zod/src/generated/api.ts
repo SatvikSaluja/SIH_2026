@@ -182,6 +182,23 @@ export const CreateProcessingRunResponse = zod.object({
 
 
 /**
+ * Test geometry, created only when asked for. It is deliberately a separate endpoint from createProcessingRun rather than a fallback inside it, so a real ingest that fails can never be quietly answered with generated data.
+ * @summary Generate an explicit synthetic ward
+ */
+export const CreateSyntheticWardBody = zod.object({
+  "seed": zod.number().int(),
+  "width": zod.number().optional(),
+  "height": zod.number().optional()
+})
+
+export const CreateSyntheticWardResponse = zod.object({
+  "ward_job_id": zod.number().int(),
+  "n_blocks": zod.number().int(),
+  "n_parcels": zod.number().int()
+})
+
+
+/**
  * @summary Scan parcel topology
  */
 export const ScanTopologyResponse = zod.object({

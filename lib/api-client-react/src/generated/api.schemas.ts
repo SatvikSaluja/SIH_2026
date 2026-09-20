@@ -93,6 +93,18 @@ export interface ProcessingRunInput {
   dataset: string;
 }
 
+export interface SyntheticWardInput {
+  seed: number;
+  width?: number;
+  height?: number;
+}
+
+export interface SyntheticWard {
+  ward_job_id: number;
+  n_blocks: number;
+  n_parcels: number;
+}
+
 export interface TopologyReport {
   scannedAt: string;
   errorCount: number;

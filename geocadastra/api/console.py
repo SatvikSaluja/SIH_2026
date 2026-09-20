@@ -141,10 +141,19 @@ def dashboard(session: Session = Depends(get_session)):
 
 @router.get("/regions")
 def regions(session: Session = Depends(get_session)):
+    """processedSqKm/parcelCount/updatedAt are required by the published
+    contract (lib/api-spec/openapi.yaml, which generates the frontend's
+    types) and neither this endpoint nor the Express one it replaced ever
+    returned them -- so the generated client promised three fields that
+    never arrived. Caught by test_api_contract.py. processedSqKm counts
+    only completed wards, matching /dashboard's own areaProcessedSqKm."""
     return [{
         "id": _region_id(s),
         "name": _region_name(s),
         "type": "Synthetic ward" if s["synthetic"] else "Georeferenced ward",
+        "processedSqKm": s["area_sqkm"] if s["status"] == "done" else 0.0,
+        "parcelCount": s["n_parcels"],
+        "updatedAt": s["updated_at"],
         "areaSqKm": s["area_sqkm"],
         "status": s["status"],
     } for s in ward_summaries(session)]
@@ -164,17 +173,21 @@ def parcels(
     return [p for p in out if p["status"] == status] if status else out
 
 
-@router.get("/parcels/{parcel_id}")
-def parcel(parcel_id: str, session: Session = Depends(get_session)):
+# Path template is {id}, not {parcel_id}: the published contract spells it
+# {id}, and OpenAPI compares path templates literally, so a different
+# parameter name reads as a different path even though both route the
+# same request. test_api_contract.py checks that they agree.
+@router.get("/parcels/{id}")
+def parcel(id: str, session: Session = Depends(get_session)):
     for summary in ward_summaries(session):
         for candidate in _parcels_of(session, summary):
-            if candidate["id"] == parcel_id:
+            if candidate["id"] == id:
                 return candidate
     raise HTTPException(404, "Parcel not found")
 
 
-@router.patch("/parcels/{parcel_id}")
-def update_parcel(parcel_id: str):
+@router.patch("/parcels/{id}")
+def update_parcel(id: str):
     """501, not a stub that pretends to save. A face's parcel association
     changes through the recorded node-edit/association workflow, which
     writes a changeset; a direct status poke would leave no provenance."""

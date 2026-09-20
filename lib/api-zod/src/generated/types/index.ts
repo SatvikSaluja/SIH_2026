@@ -37,6 +37,8 @@ export * from './processingRun';
 export * from './processingRunInput';
 export * from './region';
 export * from './sentinelOverview';
+export * from './syntheticWard';
+export * from './syntheticWardInput';
 export * from './topologyReport';
 export * from './verificationInput';
 export * from './verificationInputStatus';

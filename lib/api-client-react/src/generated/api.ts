@@ -37,6 +37,8 @@ import type {
   ProcessingRunInput,
   Region,
   SentinelOverview,
+  SyntheticWard,
+  SyntheticWardInput,
   TopologyReport,
   VerificationInput
 } from './api.schemas';
@@ -713,6 +715,95 @@ export const useCreateProcessingRun = <TError = ErrorType<unknown>,
         TContext
       > => {
       return useMutation(getCreateProcessingRunMutationOptions(options));
+    }
+
+export const getCreateSyntheticWardUrl = () => {
+
+
+
+
+  return `/api/processing/synthetic`
+}
+
+/**
+ * Test geometry, created only when asked for. It is deliberately a separate endpoint from createProcessingRun rather than a fallback inside it, so a real ingest that fails can never be quietly answered with generated data.
+ * @summary Generate an explicit synthetic ward
+ */
+export const createSyntheticWard = async (syntheticWardInput: SyntheticWardInput, options?: Parameters<typeof customFetch>[1]): Promise<SyntheticWard> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+return customFetch<SyntheticWard>(getCreateSyntheticWardUrl(),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(syntheticWardInput)
+  }
+);}
+
+
+
+
+
+export const getCreateSyntheticWardMutationKey = () => ['createSyntheticWard'] as const;
+
+export const getCreateSyntheticWardMutationOptions = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof createSyntheticWard>>, TError,CreateSyntheticWardMutationVariables, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof createSyntheticWard>>, TError,CreateSyntheticWardMutationVariables, TContext> => {
+
+const mutationKey = getCreateSyntheticWardMutationKey();
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof createSyntheticWard>>, CreateSyntheticWardMutationVariables> = (props) => {
+          const {data} = props ?? {};
+
+          return  createSyntheticWard(data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type CreateSyntheticWardMutationResult = NonNullable<Awaited<ReturnType<typeof createSyntheticWard>>>
+    export type CreateSyntheticWardMutationBody = BodyType<SyntheticWardInput>
+    export type CreateSyntheticWardMutationError = ErrorType<unknown>
+    export type CreateSyntheticWardMutationVariables = {data: BodyType<SyntheticWardInput>}
+
+    /**
+ * @summary Generate an explicit synthetic ward
+ */
+export const useCreateSyntheticWard = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof createSyntheticWard>>, TError,CreateSyntheticWardMutationVariables, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof createSyntheticWard>>,
+        TError,
+        CreateSyntheticWardMutationVariables,
+        TContext
+      > => {
+      return useMutation(getCreateSyntheticWardMutationOptions(options));
     }
 
 export const getScanTopologyUrl = () => {

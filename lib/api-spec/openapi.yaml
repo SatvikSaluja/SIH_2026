@@ -149,6 +149,29 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ProcessingRun"
+  /processing/synthetic:
+    post:
+      operationId: createSyntheticWard
+      tags: [processing]
+      summary: Generate an explicit synthetic ward
+      description: >-
+        Test geometry, created only when asked for. It is deliberately a
+        separate endpoint from createProcessingRun rather than a fallback
+        inside it, so a real ingest that fails can never be quietly
+        answered with generated data.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SyntheticWardInput"
+      responses:
+        "201":
+          description: Synthetic ward created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SyntheticWard"
   /topology/scan:
     post:
       operationId: scanTopology
@@ -441,6 +464,20 @@ components:
       properties:
         regionId: { type: string }
         dataset: { type: string }
+    SyntheticWardInput:
+      type: object
+      required: [seed]
+      properties:
+        seed: { type: integer }
+        width: { type: number }
+        height: { type: number }
+    SyntheticWard:
+      type: object
+      required: [ward_job_id, n_blocks, n_parcels]
+      properties:
+        ward_job_id: { type: integer }
+        n_blocks: { type: integer }
+        n_parcels: { type: integer }
     TopologyReport:
       type: object
       required: [scannedAt, errorCount, fixedCount, overlapCount, sliverCount, ringCount, status]

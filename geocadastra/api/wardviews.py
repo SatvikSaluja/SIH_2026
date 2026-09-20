@@ -21,7 +21,7 @@ from sqlalchemy import func, select
 from geocadastra.api.geometry import map_feature, validate_faces
 from geocadastra.jobs.orchestrator import ward_status
 from geocadastra.store.changeset import load_block_graph
-from geocadastra.store.schema import Face, IngestedBlock, WardJob
+from geocadastra.store.schema import BlockJob, Face, IngestedBlock, WardJob
 
 
 def ward_faces(session, ward_job_id):
@@ -49,7 +49,14 @@ def ward_summaries(session) -> list[dict]:
             select(func.coalesce(func.sum(func.ST_Area(IngestedBlock.geom)), 0))
             .where(IngestedBlock.ward_job_id == job.id)
         ).scalar_one()) / 1e6
+        # WardJob has no updated_at of its own. Its blocks do, and they are
+        # what actually changes as processing runs, so the latest of those is
+        # the ward's real last activity -- not created_at relabelled.
+        last_block_change = session.execute(
+            select(func.max(BlockJob.updated_at)).where(BlockJob.ward_job_id == job.id)
+        ).scalar_one()
         summaries.append({
+            "updated_at": (last_block_change or job.created_at).isoformat(),
             "ward_job_id": job.id, "source": job.source, "status": state,
             "n_blocks": len(blocks), "n_parcels": int(n_parcels),
             "completed_blocks": sum(b["status"] == "done" for b in blocks),
