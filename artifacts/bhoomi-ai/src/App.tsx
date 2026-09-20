@@ -5,8 +5,12 @@ import { Link, Route, Switch, useLocation, Router as WouterRouter } from 'wouter
 import { IndiaBoundaryMap } from './components/IndiaBoundaryMap';
 import { ParcelExplorerModal } from './components/ParcelExplorerModal';
 import { TopologyModule as Topology } from './components/TopologyModule';
-import { Dashboard, Ingestion } from './components/RealWorkspace';
+import { Dashboard, Ingestion, useWards, WardSelect } from './components/RealWorkspace';
 import { Advisory } from './components/Advisory';
+// Field verification reuses the operator console's panels rather than a
+// third implementation -- they already drive the real endpoints.
+import { ConflictsPanel } from './operator/components/ConflictsPanel';
+import { EditPanel, conflictToPrefill } from './operator/components/EditPanel';
 // The whole of the former standalone frontend/ app, folded in as one route:
 // Overview, Datasets, Inference, Evidence, Review queue, Vision assistant,
 // Training, and Ward operations (its own OperatorConsole). It is the only
@@ -15,73 +19,38 @@ import { Advisory } from './components/Advisory';
 import WorkspaceConsole from './operator/WorkspaceConsole';
 import { ParcelMap } from './components/ParcelExplorerModal';
 import {
-  Activity,
   AlertTriangle,
   ArrowDownToLine,
-  ArrowUpRight,
-  BadgeCheck,
-  BatteryMedium,
-  Bell,
   Brain,
-  Building2,
   Check,
   CheckCircle2,
   ChevronRight,
   CircleDot,
-  CloudOff,
   Download,
   FileArchive,
-  FileCheck2,
-  FileUp,
   FlaskConical,
-  Hammer,
   Layers3,
-  Map,
   MapPinned,
   Menu,
   MoreHorizontal,
   Network,
   PackageCheck,
-  PanelLeft,
-  Pause,
-  Play,
   Radio,
   RefreshCw,
-  RotateCcw,
-  Satellite,
-  Search,
-  Send,
   ShieldCheck,
   Sparkles,
   Target,
-  TrendingUp,
   UploadCloud,
-  UserRound,
-  WifiOff,
   X,
-  Zap,
 } from 'lucide-react';
 import {
-  getGetParcelQueryKey,
   useCreateExport,
-  useCreateProcessingRun,
-  useFixTopology,
-  useGetDashboard,
-  useGetParcel,
   useListChanges,
-  useListParcels,
-  useListProcessingRuns,
   useListRegions,
-  useScanTopology,
-  useUpdateParcel,
 } from '@workspace/api-client-react';
 import type {
   ChangeDetection,
-  DashboardSummary,
-  Parcel,
-  ProcessingRun,
   Region,
-  TopologyReport,
 } from '@workspace/api-client-react';
 import { ErrorBoundary } from '@/components/error-boundary';
 import { Toaster } from '@/components/ui/toaster';
@@ -115,21 +84,6 @@ function timeAgo(value: string | undefined) {
   const hours = Math.round(minutes / 60);
   if (hours < 24) return `${hours} hr ago`;
   return `${Math.round(hours / 24)} d ago`;
-}
-
-function toneClass(tone: string | undefined) {
-  if (tone === 'warning' || tone === 'high') return 'tone-warn';
-  if (tone === 'success' || tone === 'resolved') return 'tone-good';
-  if (tone === 'critical') return 'tone-danger';
-  return 'tone-info';
-}
-
-function statusClass(status: string | undefined) {
-  const value = (status ?? '').toLowerCase();
-  if (value.includes('complete') || value.includes('valid') || value.includes('verified') || value.includes('ready')) return 'status-good';
-  if (value.includes('error') || value.includes('blocked') || value.includes('critical')) return 'status-danger';
-  if (value.includes('review') || value.includes('pending') || value.includes('running')) return 'status-warn';
-  return 'status-neutral';
 }
 
 export function Surface({ children, className = '', style }: { children: React.ReactNode; className?: string; style?: React.CSSProperties }) {
@@ -271,20 +225,6 @@ function Shell({ children }: { children: React.ReactNode }) {
   );
 }
 
-function KPICard({ label, value, suffix, trend, accent, detail }: { label: string; value: string; suffix?: string; trend?: string; accent: string; detail: string }) {
-  return (
-    <div className="kpi-card" data-testid={`metric-${label.toLowerCase().replace(/\s+/g, '-')}`}>
-      <div className="kpi-top"><span>{label}</span><span className={`kpi-accent ${accent}`} /></div>
-      <div className="kpi-value">{value}{suffix && <small>{suffix}</small>}</div>
-      <div className="kpi-foot"><span className="kpi-detail">{detail}</span>{trend && <span className="kpi-trend"><ArrowUpRight size={13} /> {trend}</span>}</div>
-    </div>
-  );
-}
-
-function MiniMap({ parcels = [] }: { parcels?: Parcel[]; focusedId?: string }) {
-  return <ParcelMap parcels={parcels}/>;
-}
-
 function Changes() {
   const changes = useListChanges();
   const [filter, setFilter] = useState('all');
@@ -303,20 +243,73 @@ function ChangeRow({ item }: { item: ChangeDetection }) {
   return <div className="change-row" data-testid={`row-change-${item.id}`}><div className={`change-severity severity-${item.severity.toLowerCase()}`}><AlertTriangle size={16} /></div><div className="change-title"><strong>{item.title}</strong><span>{item.category} · {item.regionName}</span></div><div className="change-area"><small>AFFECTED AREA</small><strong>{formatNumber(item.areaSqM)} m²</strong></div><div className="change-date"><small>DETECTED</small><span>{timeAgo(item.detectedAt)}</span></div><span className={`status-pill ${item.severity.toLowerCase() === 'high' ? 'status-danger' : 'status-warn'}`}>{item.severity}</span><button className="icon-button subtle" data-testid={`button-change-actions-${item.id}`}><MoreHorizontal size={17} /></button></div>;
 }
 
+// Field verification, against the endpoint that actually performs it.
+//
+// This page used to drive PATCH /parcels/{id}, which the backend refuses
+// with a 501 on purpose -- a parcel's status is not a field a client pokes;
+// a surveyor's correction is a changeset move plus a durable SurveyPoint.
+// So "Mark verified" could never have succeeded. It also filtered its queue
+// on status 'pending', while a parcel is only ever 'matched' or 'unmatched',
+// so the queue was permanently empty. Both halves were broken in a way that
+// looked fine on screen.
+//
+// The real workflow needs a graph node id, and the only place a real one is
+// handed out is a fusion conflict row (see EditPanel's own note). So the
+// queue here is this ward's conflicts, and picking one prefills the move.
+// Panels are the operator console's, not reimplemented -- which is why this
+// renders inside .workspace-console, where their stylesheet is scoped.
 function Field() {
-  const parcels = useListParcels({ status: 'pending' });
-  const update = useUpdateParcel();
-  const [selectedId, setSelectedId] = useState('');
-  const parcelList = (parcels.data as Parcel[] | undefined) ?? [];
-  const selectedFromList = parcelList.find((item) => item.id === selectedId);
-  const detail = useGetParcel(selectedId || '', { query: { enabled: !!selectedId, queryKey: getGetParcelQueryKey(selectedId || '') } });
-  const selected = (detail.data as Parcel | undefined) ?? selectedFromList;
-  const verify = () => { if (selected) update.mutate({ id: selected.id, data: { status: 'verified' } }); };
+  const wards = useWards();
+  const [wardId, setWardId] = useState('');
+  const [prefill, setPrefill] = useState<{ blockId: number; nodeId: number | null; x: number; y: number } | null>(null);
+  const [refreshToken, setRefreshToken] = useState(0);
+  const wardJobId = wardId ? Number(wardId.replace('ward-', '')) : null;
+
   return (
     <>
-      <div className="page-heading"><div><div className="eyebrow">FIELD OPERATIONS / OFFLINE-FIRST</div><h1>Ground-truthing desk</h1><p>Resolve uncertain parcels with evidence from the field, even without signal.</p></div><div className="heading-actions"><span className="offline-chip"><WifiOff size={14} /> Offline queue <strong>12</strong></span><Button kind="secondary" onClick={() => parcels.refetch()}><RefreshCw size={15} /> Sync when online</Button></div></div>
-      <div className="field-banner"><div className="field-signal"><BatteryMedium size={20} /><span><strong>Field network unavailable</strong><small>Last sync 18 minutes ago · work continues locally</small></span></div><div className="field-progress"><span>12 queued records</span><div><i style={{ width: '64%' }} /></div><small>64% of today’s queue reviewed</small></div></div>
-      <div className="field-layout"><Surface className="field-list"><SectionHeading eyebrow="VERIFICATION QUEUE" title="Parcels awaiting evidence" action={<span className="mono">{parcelList.length} RECORDS</span>} />{parcels.isLoading ? <LoadingState label="Loading local queue" /> : parcels.isError ? <ErrorState onRetry={() => parcels.refetch()} /> : parcelList.length ? <div className="parcel-list">{parcelList.map((parcel) => <button key={parcel.id} className={`parcel-row ${selectedId === parcel.id ? 'parcel-row-active' : ''}`} onClick={() => setSelectedId(parcel.id)} data-testid={`button-select-parcel-${parcel.id}`}><span className="parcel-status"><CircleDot size={14} /></span><span><strong>{parcel.ulpin}</strong><small>{parcel.regionName} · {formatNumber(parcel.areaSqM)} m²</small></span><span className="confidence">{formatNumber(parcel.confidence, 0)}%<small>confidence</small></span><ChevronRight size={16} /></button>)}</div> : <EmptyState title="Queue is clear" detail="No pending parcel records need ground-truthing." />}</Surface><Surface className="field-detail">{selected ? <><div className="detail-header"><div><div className="eyebrow">PARCEL RECORD</div><h2>{selected.ulpin}</h2><p>{selected.regionName} · Updated {timeAgo(selected.updatedAt)}</p></div><span className={`status-pill ${statusClass(selected.status)}`}>{selected.status}</span></div><MiniMap parcels={[selected]} focusedId={selected.id} /><div className="detail-facts"><div><small>AREA</small><strong>{formatNumber(selected.areaSqM)} m²</strong></div><div><small>MODEL CONFIDENCE</small><strong>{formatNumber(selected.confidence, 1)}%</strong></div><div><small>OWNERSHIP</small><strong>{selected.ownership}</strong></div></div><div className="field-actions"><Button onClick={verify} disabled={update.isPending}><CheckCircle2 size={15} /> {update.isPending ? 'Saving locally' : 'Mark verified'}</Button><Button kind="secondary"><CloudOff size={15} /> Add field note</Button></div></> : <div className="detail-empty"><MapPinned size={30} /><strong>Select a parcel to inspect</strong><p>Choose a record from the offline queue to load geometry and evidence controls.</p></div>}</Surface></div>
+      <div className="page-heading">
+        <div>
+          <div className="eyebrow">FIELD OPERATIONS / RECORDED EVIDENCE</div>
+          <h1>Ground-truthing desk</h1>
+          <p>Confirm a boundary corner from the field. Applied as a changeset move and recorded as a durable survey point, so Stage 6/7 calibration can use it like any other control point.</p>
+        </div>
+        <div className="heading-actions">
+          <Button kind="secondary" onClick={() => { void wards.refetch(); setRefreshToken((t) => t + 1); }}>
+            <RefreshCw size={15} /> Refresh
+          </Button>
+        </div>
+      </div>
+
+      <div className="workspace-console">
+        <section className="panel">
+          <h3>Ward</h3>
+          <WardSelect value={wardId} onChange={(v) => { setWardId(v); setPrefill(null); }} wards={wards.data?.wards ?? []} />
+          {wards.error && <p role="alert">{wards.error.message}</p>}
+          <p className="muted">
+            A corner can only be verified once every face touching it has a resolved parcel
+            identity. On a freshly processed ward most corners do not yet, and the backend
+            refuses them with “edit touches an unassigned face” — resolve identity for those
+            parcels first (Operator console → Ward operations), then come back.
+          </p>
+        </section>
+
+        {wardJobId === null ? (
+          <p className="muted">Select a ward to load its recorded conflicts.</p>
+        ) : (
+          <>
+            <ConflictsPanel
+              wardJobId={wardJobId}
+              refreshToken={refreshToken}
+              onPickConflict={(c) => setPrefill(conflictToPrefill(c))}
+            />
+            <EditPanel
+              wardJobId={wardJobId}
+              prefill={prefill}
+              onApplied={() => { setPrefill(null); setRefreshToken((t) => t + 1); }}
+            />
+          </>
+        )}
+      </div>
     </>
   );
 }
