@@ -15,7 +15,8 @@ services:
       - key: GEOCADASTRA_DB_SCHEMA
         value: public
       - key: GEOCADASTRA_CELERY_BROKER_URL
-        fromDatabase:
+        fromService:
+          type: keyvalue
           name: geocadastra-redis-v2
           property: connectionString
       - key: GEOCADASTRA_CORS_ORIGINS
@@ -67,16 +68,22 @@ services:
       - key: GEOCADASTRA_DB_SCHEMA
         value: public
       - key: GEOCADASTRA_CELERY_BROKER_URL
-        fromDatabase:
+        fromService:
+          type: keyvalue
           name: geocadastra-redis-v2
           property: connectionString
+
+  - type: keyvalue
+    name: geocadastra-redis-v2
+    plan: free
+    region: oregon
+    maxmemoryPolicy: allkeys-lru
+    ipAllowList:
+      - source: 0.0.0.0/0
+        description: everywhere
 
 databases:
   - name: geocadastra-db-v2
     databaseName: geocadastra
     plan: free
     postgresMajorVersion: "16"
-
-  - name: geocadastra-redis-v2
-    plan: free
-    maxmemoryPolicy: allkeys-lru
