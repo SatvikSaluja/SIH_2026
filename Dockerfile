@@ -22,4 +22,13 @@ EXPOSE 10000
 # (dockerCommand: celery ...) and does not need the bootstrap step at all.
 # $PORT: Render injects this at runtime -- shell-form CMD expands it;
 # ${PORT:-10000} keeps `docker run` usable locally without Render's env.
-CMD python scripts/render_bootstrap.py && python -m uvicorn geocadastra.api.main:app --host 0.0.0.0 --port ${PORT:-10000}
+#
+# `-m scripts.render_bootstrap`, not a bare path: `python scripts/foo.py`
+# puts the SCRIPT'S OWN directory (/app/scripts) on sys.path[0], not the
+# cwd -- so `from geocadastra... import ...` inside it fails with
+# ModuleNotFoundError, because /app (where geocadastra/ actually lives)
+# was never on sys.path at all. `-m` puts the cwd (/app, via WORKDIR) on
+# sys.path[0] instead, which is what the import needs. Confirmed this was
+# the actual crash on Render's first real deploy of this Dockerfile, not
+# a hypothetical: reproduced locally by invoking both ways.
+CMD python -m scripts.render_bootstrap && python -m uvicorn geocadastra.api.main:app --host 0.0.0.0 --port ${PORT:-10000}
